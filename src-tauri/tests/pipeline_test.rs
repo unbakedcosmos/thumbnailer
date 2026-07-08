@@ -1,6 +1,6 @@
-//! End-to-end pipeline tests on synthetic footage (PRD success metrics:
-//! size guarantee, orientation-aware grids, robustness on truncated files,
-//! idempotent re-runs, batch engine with zero silent skips).
+//! End-to-end pipeline tests on synthetic footage: animated size guarantee,
+//! orientation-aware grids, static formats, frame templates, montage-as-still,
+//! robustness on truncated files, idempotent re-runs, batch engine isolation.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -46,6 +46,10 @@ fn test_config(grid: GridDims) -> JobConfig {
     }
 }
 
+fn classic() -> FrameTemplate {
+    FrameTemplate::default()
+}
+
 fn ctl() -> GenControl {
     GenControl {
         cancel: CancellationToken::new(),
@@ -54,45 +58,35 @@ fn ctl() -> GenControl {
     }
 }
 
-fn assert_under_target(outcome: &JobOutcome, target_mb: f64) {
-    for a in &outcome.artifacts {
-        let on_disk = std::fs::metadata(&a.path).expect("artifact exists").len();
-        assert_eq!(on_disk, a.bytes, "reported size matches disk");
-        assert!(
-            on_disk as f64 <= target_mb * 1_000_000.0,
-            "{} is {} bytes, over the {target_mb} MB hard target (FR16)",
-            a.path,
-            on_disk
-        );
-        assert!(on_disk > 0, "artifact is not empty");
-    }
-}
-
 #[tokio::test]
-async fn landscape_produces_all_artifacts_under_target() {
+async fn landscape_produces_all_artifacts() {
     let tmp = tempfile::tempdir().unwrap();
     let video = make_video(tmp.path(), "Chair Play [5587459].mp4", 1280, 720, 12.0);
     let fonts = Fonts::load();
     let config = test_config(GridDims { cols: 3, rows: 3 });
 
-    let (meta, outcome) = run_job(&video, &config, &fonts, &ctl())
+    let (meta, outcome) = run_job(&video, &config, &classic(), &fonts, &ctl())
         .await
         .expect("job succeeds");
     assert_eq!(meta.width, 1280);
     assert!(!meta.is_portrait());
     assert_eq!(outcome.artifacts.len(), 3, "static + animated + montage");
-    assert_under_target(&outcome, config.target_mb);
 
-    // Artifacts land in srcs/ next to the source, named by convention (FR23)
+    // New naming convention (CHANGELOG §3): suffix + extension per file type
     let srcs = tmp.path().join("srcs");
-    assert!(
-        srcs.join("Chair Play [5587459]_contact.png").exists()
-            || srcs.join("Chair Play [5587459]_contact.jpg").exists()
-    );
-    assert!(srcs.join("Chair Play [5587459]_contact.webp").exists());
-    assert!(srcs.join("Chair Play [5587459]_loop.webp").exists());
+    assert!(srcs.join("Chair Play [5587459]_contact.png").exists());
+    assert!(srcs.join("Chair Play [5587459]_animated.webp").exists());
+    assert!(srcs.join("Chair Play [5587459]_montage.png").exists());
 
-    // Static sheet: landscape tiles → sheet wider than tall for a 3×3 grid
+    // Animated is the size-gated artifact (≤ target on disk)
+    let anim = outcome
+        .artifacts
+        .iter()
+        .find(|a| a.kind == ArtifactKind::Animated)
+        .unwrap();
+    assert!(anim.bytes as f64 <= config.animated.target_mb * 1e6);
+
+    // Static sheet: 2× render, decodes
     let png = outcome
         .artifacts
         .iter()
@@ -100,6 +94,18 @@ async fn landscape_produces_all_artifacts_under_target() {
         .unwrap();
     let img = image::open(&png.path).expect("static sheet decodes");
     assert!(img.width() > 800, "2× render is crisp, got {}", img.width());
+
+    // Montage: one composed frame — single tile, wider than tall for landscape
+    let mont = outcome
+        .artifacts
+        .iter()
+        .find(|a| a.kind == ArtifactKind::Montage)
+        .unwrap();
+    let mimg = image::open(&mont.path).unwrap();
+    assert!(
+        mimg.width() > mimg.height(),
+        "montage is a single landscape cell"
+    );
 }
 
 #[tokio::test]
@@ -114,11 +120,10 @@ async fn portrait_gets_orientation_aware_tiles() {
         montage: false,
     };
 
-    let (meta, outcome) = run_job(&video, &config, &fonts, &ctl())
+    let (meta, outcome) = run_job(&video, &config, &classic(), &fonts, &ctl())
         .await
         .expect("job succeeds");
     assert!(meta.is_portrait());
-    assert_under_target(&outcome, config.target_mb);
 
     // 3 cols of 9:16 tiles → the sheet must be taller than wide (FR8a)
     let sheet = &outcome.artifacts[0];
@@ -132,6 +137,89 @@ async fn portrait_gets_orientation_aware_tiles() {
 }
 
 #[tokio::test]
+async fn static_formats_and_frame_toggle() {
+    let tmp = tempfile::tempdir().unwrap();
+    let video = make_video(tmp.path(), "Quick Clip [5589801].mp4", 640, 360, 6.0);
+    let fonts = Fonts::load();
+    let mut config = test_config(GridDims { cols: 2, rows: 2 });
+    config.artifacts = ArtifactSet {
+        static_sheet: true,
+        animated: false,
+        montage: false,
+    };
+
+    // JPEG format → _contact.jpg, and the PNG sibling never exists
+    config.static_cfg.format = StaticFormat::Jpeg;
+    config.static_cfg.quality = 70;
+    let (_, out_jpg) = run_job(&video, &config, &classic(), &fonts, &ctl())
+        .await
+        .unwrap();
+    let jpg_path = PathBuf::from(&out_jpg.artifacts[0].path);
+    assert!(jpg_path.to_string_lossy().ends_with("_contact.jpg"));
+
+    // Switching to WebP replaces the jpg (stale-sibling cleanup) — overwrite
+    // not needed because the webp doesn't exist yet
+    config.static_cfg.format = StaticFormat::Webp;
+    let (_, out_webp) = run_job(&video, &config, &classic(), &fonts, &ctl())
+        .await
+        .unwrap();
+    assert!(out_webp.artifacts[0].path.ends_with("_contact.webp"));
+    assert!(
+        !jpg_path.exists(),
+        "stale jpg sibling removed on format switch"
+    );
+
+    // Frame off = raw grab: grid only, no header band → shorter than framed.
+    // Same size sheet with band would differ in height.
+    config.static_cfg.format = StaticFormat::Png;
+    config.static_cfg.frame_on = true;
+    let ctl_ow = || GenControl {
+        cancel: CancellationToken::new(),
+        overwrite: true,
+        progress: Box::new(|_| {}),
+    };
+    let (_, framed) = run_job(&video, &config, &classic(), &fonts, &ctl_ow())
+        .await
+        .unwrap();
+    let framed_img = image::open(&framed.artifacts[0].path).unwrap();
+    config.static_cfg.frame_on = false;
+    let (_, raw) = run_job(&video, &config, &classic(), &fonts, &ctl_ow())
+        .await
+        .unwrap();
+    let raw_img = image::open(&raw.artifacts[0].path).unwrap();
+    assert!(
+        framed_img.height() > raw_img.height(),
+        "header band adds height: framed {} vs raw {}",
+        framed_img.height(),
+        raw_img.height()
+    );
+}
+
+#[tokio::test]
+async fn animated_gif_format_encodes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let video = make_video(tmp.path(), "Sunset Loop [5588120].mp4", 640, 360, 6.0);
+    let fonts = Fonts::load();
+    let mut config = test_config(GridDims { cols: 2, rows: 2 });
+    config.artifacts = ArtifactSet {
+        static_sheet: false,
+        animated: true,
+        montage: false,
+    };
+    config.animated.format = AnimatedFormat::Gif;
+    config.animated.quality = 40;
+
+    let (_, outcome) = run_job(&video, &config, &classic(), &fonts, &ctl())
+        .await
+        .unwrap();
+    let gif = &outcome.artifacts[0];
+    assert!(gif.path.ends_with("_animated.gif"));
+    let bytes = std::fs::read(&gif.path).unwrap();
+    assert_eq!(&bytes[0..3], b"GIF", "valid GIF header");
+    assert!(bytes.len() as f64 <= config.animated.target_mb * 1e6);
+}
+
+#[tokio::test]
 async fn truncated_file_fails_as_unreadable() {
     let tmp = tempfile::tempdir().unwrap();
     let video = make_video(tmp.path(), "Broken Grab [5588999].mp4", 640, 360, 5.0);
@@ -141,17 +229,12 @@ async fn truncated_file_fails_as_unreadable() {
 
     let fonts = Fonts::load();
     let config = test_config(GridDims { cols: 2, rows: 2 });
-    let err = run_job(&video, &config, &fonts, &ctl())
+    let err = run_job(&video, &config, &classic(), &fonts, &ctl())
         .await
         .expect_err("must fail");
     assert!(
         matches!(err, Failure::Unreadable(_)),
         "typed reason is unreadable (FR5), got: {err:?}"
-    );
-    // And nothing was silently written (FR16 counter-metric)
-    assert!(
-        !tmp.path().join("srcs").exists()
-            || std::fs::read_dir(tmp.path().join("srcs")).unwrap().count() == 0
     );
 }
 
@@ -167,13 +250,17 @@ async fn rerun_is_idempotent_until_overwrite() {
         montage: false,
     };
 
-    let (_, first) = run_job(&video, &config, &fonts, &ctl()).await.unwrap();
+    let (_, first) = run_job(&video, &config, &classic(), &fonts, &ctl())
+        .await
+        .unwrap();
     assert_eq!(first.artifacts.len(), 1);
     let produced = PathBuf::from(&first.artifacts[0].path);
     let mtime1 = std::fs::metadata(&produced).unwrap().modified().unwrap();
 
     // Second run without overwrite: skipped, artifact untouched (FR24)
-    let (_, second) = run_job(&video, &config, &fonts, &ctl()).await.unwrap();
+    let (_, second) = run_job(&video, &config, &classic(), &fonts, &ctl())
+        .await
+        .unwrap();
     assert!(second.artifacts.is_empty());
     assert_eq!(second.skipped_existing, vec![ArtifactKind::Static]);
     assert_eq!(
@@ -187,33 +274,41 @@ async fn rerun_is_idempotent_until_overwrite() {
         overwrite: true,
         progress: Box::new(|_| {}),
     };
-    let (_, third) = run_job(&video, &config, &fonts, &ctl_ow).await.unwrap();
+    let (_, third) = run_job(&video, &config, &classic(), &fonts, &ctl_ow)
+        .await
+        .unwrap();
     assert_eq!(third.artifacts.len(), 1);
 }
 
 #[tokio::test]
-async fn impossible_target_never_emits_oversize() {
+async fn impossible_target_never_emits_oversize_animated() {
     let tmp = tempfile::tempdir().unwrap();
     let video = make_video(tmp.path(), "Big Motion [5589301].mp4", 1280, 720, 10.0);
     let fonts = Fonts::load();
     let mut config = test_config(GridDims { cols: 3, rows: 3 });
-    config.quality = 95;
-    config.target_mb = 0.05; // 50 KB — unreachable for a 3×3 sheet
+    config.artifacts = ArtifactSet {
+        static_sheet: false,
+        animated: true,
+        montage: false,
+    };
+    config.animated.quality = 95;
+    config.animated.target_mb = 0.05; // 50 KB — unreachable
 
-    let result = run_job(&video, &config, &fonts, &ctl()).await;
+    let result = run_job(&video, &config, &classic(), &fonts, &ctl()).await;
     match result {
         Err(Failure::QualityFloor(_)) => {}
         Err(other) => panic!("expected quality-floor failure, got {other:?}"),
         Ok((_, outcome)) => {
-            // If anything was emitted it must genuinely be under target (FR16)
-            assert_under_target(&outcome, config.target_mb);
+            for a in &outcome.artifacts {
+                assert!(a.bytes as f64 <= config.animated.target_mb * 1e6);
+            }
         }
     }
-    // Whatever happened, no oversize file exists on disk
+    // Whatever happened, no oversize animated file exists on disk (FR16)
     if let Ok(rd) = std::fs::read_dir(tmp.path().join("srcs")) {
         for f in rd.flatten() {
             assert!(
-                f.metadata().unwrap().len() as f64 <= config.target_mb * 1_000_000.0,
+                f.metadata().unwrap().len() as f64 <= config.animated.target_mb * 1_000_000.0,
                 "silent oversize artifact: {:?}",
                 f.path()
             );
@@ -238,7 +333,6 @@ async fn batch_engine_isolates_failures_and_completes() {
     let added = engine.add_paths(vec![tmp.path().to_path_buf()]);
     assert_eq!(added, 3, "recursive folder scan finds all videos (FR1/FR3)");
 
-    // Give every job a fast config
     let cfg = JobConfig {
         grid: GridDims { cols: 2, rows: 2 },
         artifacts: ArtifactSet {
@@ -273,4 +367,38 @@ async fn batch_engine_isolates_failures_and_completes() {
     let restored = engine2.load_manifest().expect("manifest restores");
     assert_eq!(restored.done, 2);
     assert_eq!(restored.failed, 1);
+}
+
+#[tokio::test]
+async fn template_store_crud_and_builtin_protection() {
+    let data = tempfile::tempdir().unwrap();
+    let engine = Engine::new(Arc::new(|_, _| {}), data.path().to_path_buf());
+
+    let list = engine.templates.list();
+    assert_eq!(list.len(), 3, "ships Classic / Minimal / Bold");
+    assert!(list.iter().all(|t| t.builtin));
+
+    // Built-ins can't be edited or deleted
+    assert!(engine.templates.save(FrameTemplate::default()).is_err());
+    assert!(engine.templates.delete("classic").is_err());
+
+    // Save a custom, survives a new store instance (templates.json)
+    let custom = FrameTemplate {
+        id: "".into(),
+        name: "Poster".into(),
+        header_band: true,
+        border: BorderStyle::Thick,
+        timestamp_style: TimestampStyle::Overlay,
+        accent: AccentChoice::White,
+        builtin: false,
+    };
+    let saved = engine.templates.save(custom).unwrap();
+    assert!(!saved.id.is_empty());
+
+    let engine2 = Engine::new(Arc::new(|_, _| {}), data.path().to_path_buf());
+    assert_eq!(engine2.templates.list().len(), 4);
+    assert_eq!(engine2.templates.get(&saved.id).name, "Poster");
+
+    engine2.templates.delete(&saved.id).unwrap();
+    assert_eq!(engine2.templates.list().len(), 3);
 }

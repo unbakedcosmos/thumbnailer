@@ -1,6 +1,7 @@
-//! Per-video artifact generation: static sheet, animated grid, montage loop —
-//! each governed by the bounded auto-fit loop (PRD FR16/FR17/FR17a): every
-//! emitted artifact is ≤ target or it is not emitted and reported as a failure.
+//! Per-video artifact generation. The animated preview is size-governed by a
+//! bounded auto-fit ladder (PRD FR16/FR17/FR17a): it is ≤ target or it is not
+//! emitted. Static & montage images are format/quality-driven, not size-gated
+//! (CHANGELOG §1) — their knobs are file type, compression and the sheet frame.
 
 use crate::extract::{extract_clip, extract_frame};
 use crate::probe::{fmt_duration, probe};
@@ -14,11 +15,9 @@ use tokio_util::sync::CancellationToken;
 
 const ANIM_FPS: f64 = 12.0;
 const ANIM_FRAMES: usize = 30; // 2.5 s — the proven ceiling (PRD FR13)
-const MONTAGE_SEGMENTS: usize = 6;
-const MONTAGE_SEG_FRAMES: usize = 14; // ~1.2 s per segment @ 12 fps
 const STATIC_TIMEOUT: Duration = Duration::from_secs(180);
 const ANIM_TIMEOUT: Duration = Duration::from_secs(420);
-const MONTAGE_TIMEOUT: Duration = Duration::from_secs(180);
+const MONTAGE_TIMEOUT: Duration = Duration::from_secs(90);
 
 pub struct GenControl {
     pub cancel: CancellationToken,
@@ -85,25 +84,30 @@ pub fn output_dir(source: &Path, config: &JobConfig) -> PathBuf {
     }
 }
 
-pub fn artifact_path(source: &Path, config: &JobConfig, kind: ArtifactKind) -> PathBuf {
-    let stem = sanitize_stem(
+fn stem_of(source: &Path) -> String {
+    sanitize_stem(
         source
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("video"),
-    );
-    output_dir(source, config).join(format!("{stem}{}", kind.suffix()))
+    )
 }
 
-/// Static's JPEG fallback name (never `_contact.webp` — that's the animated grid's).
-fn static_jpg_path(source: &Path, config: &JobConfig) -> PathBuf {
-    let stem = sanitize_stem(
-        source
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("video"),
-    );
-    output_dir(source, config).join(format!("{stem}_contact.jpg"))
+pub fn artifact_path(source: &Path, config: &JobConfig, kind: ArtifactKind) -> PathBuf {
+    output_dir(source, config).join(format!("{}{}", stem_of(source), kind.suffix(config)))
+}
+
+/// Remove artifacts of the same kind written under a different format choice,
+/// so a format switch doesn't leave both `_contact.png` and `_contact.jpg`.
+fn remove_stale_siblings(source: &Path, config: &JobConfig, kind: ArtifactKind, keep: &Path) {
+    let dir = output_dir(source, config);
+    let stem = stem_of(source);
+    for suffix in kind.all_suffixes() {
+        let p = dir.join(format!("{stem}{suffix}"));
+        if p != keep {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
 }
 
 fn exists_valid(p: &Path) -> bool {
@@ -192,12 +196,115 @@ fn encode_jpeg(img: &RgbImage, q: u8) -> Result<Vec<u8>, Failure> {
     Ok(out)
 }
 
+fn encode_webp_static(img: &RgbImage, q: f32) -> Vec<u8> {
+    webp::Encoder::from_rgb(img.as_raw(), img.width(), img.height())
+        .encode(q)
+        .to_vec()
+}
+
+/// Encode a composed image per the static format choice. The compression
+/// slider maps onto the lossy encoders; PNG ignores it (lossless).
+fn encode_static(img: &RgbImage, format: StaticFormat, quality: u8) -> Result<Vec<u8>, Failure> {
+    match format {
+        StaticFormat::Png => encode_png(img),
+        StaticFormat::Jpeg => encode_jpeg(img, (30 + quality as u32 * 65 / 100) as u8),
+        StaticFormat::Webp => Ok(encode_webp_static(img, 40.0 + quality as f32 * 0.55)),
+    }
+}
+
 fn rgb_to_rgba(img: &RgbImage) -> Vec<u8> {
     let mut out = Vec::with_capacity((img.width() * img.height() * 4) as usize);
     for p in img.pixels() {
         out.extend_from_slice(&[p.0[0], p.0[1], p.0[2], 255]);
     }
     out
+}
+
+/// Shared byte sink for GifEncoder, which never hands its writer back.
+#[derive(Clone, Default)]
+struct SharedBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl Write for SharedBuf {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Incremental animated encoder over composed frames — WebP or GIF.
+enum AnimEncoder {
+    Webp(Box<webp_animation::Encoder>, f64, usize),
+    Gif(image::codecs::gif::GifEncoder<SharedBuf>, f64, SharedBuf),
+}
+
+impl AnimEncoder {
+    fn new(format: AnimatedFormat, w: u32, h: u32, webp_q: f32, fps: f64) -> Result<Self, Failure> {
+        match format {
+            AnimatedFormat::Webp => {
+                let enc = webp_animation::Encoder::new_with_options(
+                    (w, h),
+                    webp_animation::EncoderOptions {
+                        encoding_config: Some(webp_animation::EncodingConfig {
+                            quality: webp_q,
+                            method: 4,
+                            encoding_type: webp_animation::EncodingType::Lossy(
+                                webp_animation::LossyEncodingConfig::default(),
+                            ),
+                        }),
+                        ..Default::default()
+                    },
+                )
+                .map_err(|e| Failure::DecodeError(format!("webp encoder: {e}")))?;
+                Ok(AnimEncoder::Webp(Box::new(enc), fps, 0))
+            }
+            AnimatedFormat::Gif => {
+                let buf = SharedBuf::default();
+                let mut enc = image::codecs::gif::GifEncoder::new_with_speed(buf.clone(), 12);
+                enc.set_repeat(image::codecs::gif::Repeat::Infinite)
+                    .map_err(|e| Failure::DecodeError(format!("gif encoder: {e}")))?;
+                Ok(AnimEncoder::Gif(enc, fps, buf))
+            }
+        }
+    }
+
+    fn add_frame(&mut self, frame: &RgbImage) -> Result<(), Failure> {
+        match self {
+            AnimEncoder::Webp(enc, fps, n) => {
+                let ts_ms = (*n as f64 * 1000.0 / *fps) as i32;
+                enc.add_frame(&rgb_to_rgba(frame), ts_ms)
+                    .map_err(|e| Failure::DecodeError(format!("webp frame: {e}")))?;
+                *n += 1;
+                Ok(())
+            }
+            AnimEncoder::Gif(enc, fps, _) => {
+                let rgba =
+                    image::RgbaImage::from_raw(frame.width(), frame.height(), rgb_to_rgba(frame))
+                        .expect("sized");
+                let delay = image::Delay::from_numer_denom_ms((1000.0 / *fps).round() as u32, 1);
+                enc.encode_frame(image::Frame::from_parts(rgba, 0, 0, delay))
+                    .map_err(|e| Failure::DecodeError(format!("gif frame: {e}")))
+            }
+        }
+    }
+
+    fn finish(self) -> Result<Vec<u8>, Failure> {
+        match self {
+            AnimEncoder::Webp(enc, fps, n) => {
+                let end_ms = (n as f64 * 1000.0 / fps) as i32;
+                Ok(enc
+                    .finalize(end_ms)
+                    .map_err(|e| Failure::DecodeError(format!("webp finalize: {e}")))?
+                    .to_vec())
+            }
+            AnimEncoder::Gif(enc, _, buf) => {
+                drop(enc); // flushes trailer into the shared buffer
+                Ok(std::mem::take(&mut *buf.0.lock().unwrap()))
+            }
+        }
+    }
 }
 
 struct AnimFrames<'a> {
@@ -207,35 +314,23 @@ struct AnimFrames<'a> {
     fps: f64,
 }
 
-/// Compose + encode one animated-webp attempt at the given layout and quality.
+/// Compose + encode one animated attempt at the given layout and quality.
 #[allow(clippy::too_many_arguments)]
 fn encode_animated(
     l: &SheetLayout,
     fonts: &Fonts,
     hm: &HeaderMeta,
+    frame_tpl: &FrameTemplate,
     times: &[f64],
-    show_timestamps: bool,
     af: &mut AnimFrames,
+    format: AnimatedFormat,
     webp_q: f32,
     ctl: &GenControl,
     prog_base: f32,
     prog_span: f32,
 ) -> Result<Vec<u8>, Failure> {
-    let chrome = render_chrome(l, fonts, hm);
-    let mut enc = webp_animation::Encoder::new_with_options(
-        (l.card_w, l.card_h),
-        webp_animation::EncoderOptions {
-            encoding_config: Some(webp_animation::EncodingConfig {
-                quality: webp_q,
-                method: 4,
-                encoding_type: webp_animation::EncodingType::Lossy(
-                    webp_animation::LossyEncodingConfig::default(),
-                ),
-            }),
-            ..Default::default()
-        },
-    )
-    .map_err(|e| Failure::DecodeError(format!("webp encoder: {e}")))?;
+    let chrome = render_chrome(l, fonts, hm, frame_tpl);
+    let mut enc = AnimEncoder::new(format, l.card_w, l.card_h, webp_q, af.fps)?;
 
     let n = af.indices.len();
     for (j, &src_idx) in af.indices.iter().enumerate() {
@@ -247,20 +342,20 @@ fn encode_animated(
                 .frame(tile, src_idx)
                 .map_err(|e| io_failure(&e, "clip spool"))?;
             blit_tile(&mut frame, l, tile as u32, &img);
-            if show_timestamps {
-                draw_timestamp(&mut frame, l, tile as u32, fonts, &fmt_timestamp(t));
-            }
+            draw_timestamp(
+                &mut frame,
+                l,
+                tile as u32,
+                fonts,
+                &fmt_timestamp(t),
+                frame_tpl.timestamp_style,
+                frame_tpl.accent,
+            );
         }
-        let ts_ms = (j as f64 * 1000.0 / af.fps) as i32;
-        enc.add_frame(&rgb_to_rgba(&frame), ts_ms)
-            .map_err(|e| Failure::DecodeError(format!("webp frame: {e}")))?;
+        enc.add_frame(&frame)?;
         ctl.report(prog_base + prog_span * (j + 1) as f32 / n as f32);
     }
-    let end_ms = (n as f64 * 1000.0 / af.fps) as i32;
-    let data = enc
-        .finalize(end_ms)
-        .map_err(|e| Failure::DecodeError(format!("webp finalize: {e}")))?;
-    Ok(data.to_vec())
+    enc.finish()
 }
 
 /// One rung of the animated auto-fit ladder (PRD FR17: quality → fps → loop →
@@ -272,11 +367,11 @@ struct FitStep {
     scale: f64,
 }
 
-fn anim_ladder(quality: u8) -> Vec<FitStep> {
+fn anim_ladder(quality: u8, format: AnimatedFormat) -> Vec<FitStep> {
     let base_q = (55.0 + 0.4 * quality as f32).min(92.0);
     let q2 = (base_q - 14.0).max(38.0);
     let q3 = (base_q - 28.0).max(38.0);
-    vec![
+    let mut steps = vec![
         FitStep {
             q: base_q,
             fps: ANIM_FPS,
@@ -319,7 +414,14 @@ fn anim_ladder(quality: u8) -> Vec<FitStep> {
             n_frames: 16,
             scale: 0.65,
         },
-    ]
+    ];
+    if format == AnimatedFormat::Gif {
+        // GIF has no quality knob — collapse the quality rungs so the ladder
+        // is fps → loop → resolution only
+        steps.remove(2);
+        steps.remove(1);
+    }
+    steps
 }
 
 /// Map a rung's fps/frame budget onto the indices of the extracted 12fps clip.
@@ -336,98 +438,83 @@ pub struct JobInput<'a> {
     pub title: &'a str,
     pub config: &'a JobConfig,
     pub meta: &'a VideoMeta,
+    pub template: &'a FrameTemplate,
     pub fonts: &'a Fonts,
 }
 
-async fn generate_static(
+/// Compose a framed sheet image: extract one frame per tile, apply the frame
+/// template. Used by both the static sheet (N×M) and the montage (1×1 — "one
+/// composed frame", CHANGELOG §1.2).
+async fn compose_still_sheet(
     inp: &JobInput<'_>,
+    grid: GridDims,
+    ctl: &GenControl,
+    p0: f32,
+    span: f32,
+) -> Result<RgbImage, Failure> {
+    let cfg = inp.config;
+    let meta = inp.meta;
+    let aspect = tile_aspect(cfg.orientation, meta);
+    let frame_tpl = effective_frame(cfg.static_cfg.frame_on, inp.template);
+    let l = static_layout(grid, aspect, 1.0, frame_tpl.header_band);
+    let n = grid.tiles();
+    let times = sample_times(meta.duration_s, n);
+    let hm = header_meta(inp.title, meta);
+
+    let inner_w = l.tile_w - 2 * l.hairline;
+    let inner_h = l.tile_h - 2 * l.hairline;
+    let mut img = render_chrome(&l, inp.fonts, &hm, &frame_tpl);
+    for (i, &t) in times.iter().enumerate() {
+        ctl.check()?;
+        let tile = extract_frame(
+            inp.source,
+            t,
+            inner_w,
+            inner_h,
+            meta.hdr,
+            cfg.static_cfg.sharpen,
+        )
+        .await?;
+        blit_tile(&mut img, &l, i as u32, &tile);
+        draw_timestamp(
+            &mut img,
+            &l,
+            i as u32,
+            inp.fonts,
+            &fmt_timestamp(t),
+            frame_tpl.timestamp_style,
+            frame_tpl.accent,
+        );
+        ctl.report(p0 + span * 0.85 * (i + 1) as f32 / n as f32);
+    }
+    Ok(img)
+}
+
+async fn generate_still(
+    inp: &JobInput<'_>,
+    kind: ArtifactKind, // Static (N×M) or Montage (1×1)
     ctl: &GenControl,
     p0: f32,
     span: f32,
 ) -> Result<ProducedArtifact, Failure> {
     let cfg = inp.config;
-    let meta = inp.meta;
-    let target = (cfg.target_mb * 1_000_000.0) as u64;
-    let aspect = tile_aspect(cfg.orientation, meta);
-    // Quality slider scales the static render: 2× at 62, range ~1.3×–2.6×
-    let scale_mult = 0.65 + 0.011 * cfg.quality as f64;
-    let l = static_layout(cfg.grid, aspect, scale_mult);
-    let n = cfg.grid.tiles();
-    let times = sample_times(meta.duration_s, n);
-    let hm = header_meta(inp.title, meta);
-
-    // Extract each tile's frame at full tile resolution
-    let inner_w = l.tile_w - 2 * l.hairline;
-    let inner_h = l.tile_h - 2 * l.hairline;
-    let mut tiles: Vec<RgbImage> = Vec::with_capacity(n as usize);
-    for (i, &t) in times.iter().enumerate() {
-        ctl.check()?;
-        tiles.push(extract_frame(inp.source, t, inner_w, inner_h, meta.hdr).await?);
-        ctl.report(p0 + span * 0.7 * (i + 1) as f32 / n as f32);
-    }
-
-    let compose = |scale_mult: f64| -> RgbImage {
-        let l = static_layout(cfg.grid, aspect, scale_mult);
-        let mut img = render_chrome(&l, inp.fonts, &hm);
-        for (i, tile) in tiles.iter().enumerate() {
-            blit_tile(&mut img, &l, i as u32, tile);
-            if cfg.timestamps {
-                draw_timestamp(&mut img, &l, i as u32, inp.fonts, &fmt_timestamp(times[i]));
-            }
-        }
-        img
+    let grid = if kind == ArtifactKind::Montage {
+        GridDims { cols: 1, rows: 1 }
+    } else {
+        cfg.grid
     };
-
-    // Auto-fit ladder for static (PRD FR17): PNG → JPEG quality → resolution
-    let full = compose(scale_mult);
-    ctl.report(p0 + span * 0.85);
-    let png = encode_png(&full)?;
-    let dest_png = artifact_path(inp.source, cfg, ArtifactKind::Static);
-    if png.len() as u64 <= target {
-        atomic_write(&dest_png, &png)?;
-        return Ok(ProducedArtifact {
-            kind: ArtifactKind::Static,
-            path: dest_png.to_string_lossy().into(),
-            bytes: png.len() as u64,
-            degraded: false,
-        });
-    }
-
-    let attempts: Vec<(f64, u8)> = vec![
-        (scale_mult, 88),
-        (scale_mult, 78),
-        (scale_mult, 68),
-        (scale_mult * 0.85, 78),
-        (scale_mult * 0.7, 75),
-        (scale_mult * 0.55, 72),
-    ];
-    let dest_jpg = static_jpg_path(inp.source, cfg);
-    for (i, (sm, q)) in attempts.iter().enumerate() {
-        ctl.check()?;
-        let img = if (*sm - scale_mult).abs() < f64::EPSILON {
-            full.clone()
-        } else {
-            compose(*sm)
-        };
-        let jpg = encode_jpeg(&img, *q)?;
-        if jpg.len() as u64 <= target {
-            // Quality floor (FR17a): the smallest rung still counts, below it we fail
-            atomic_write(&dest_jpg, &jpg)?;
-            // Remove a stale PNG from a previous config so both names don't linger
-            let _ = std::fs::remove_file(&dest_png);
-            ctl.report(p0 + span);
-            return Ok(ProducedArtifact {
-                kind: ArtifactKind::Static,
-                path: dest_jpg.to_string_lossy().into(),
-                bytes: jpg.len() as u64,
-                degraded: i > 0,
-            });
-        }
-    }
-    Err(Failure::QualityFloor(format!(
-        "static sheet ≥ {:.1} MB at smallest allowed render",
-        cfg.target_mb
-    )))
+    let img = compose_still_sheet(inp, grid, ctl, p0, span).await?;
+    let bytes = encode_static(&img, cfg.static_cfg.format, cfg.static_cfg.quality)?;
+    let dest = artifact_path(inp.source, cfg, kind);
+    atomic_write(&dest, &bytes)?;
+    remove_stale_siblings(inp.source, cfg, kind, &dest);
+    ctl.report(p0 + span);
+    Ok(ProducedArtifact {
+        kind,
+        path: dest.to_string_lossy().into(),
+        bytes: bytes.len() as u64,
+        degraded: false,
+    })
 }
 
 async fn generate_animated(
@@ -438,11 +525,14 @@ async fn generate_animated(
 ) -> Result<ProducedArtifact, Failure> {
     let cfg = inp.config;
     let meta = inp.meta;
-    let target = (cfg.target_mb * 1_000_000.0) as u64;
+    let anim = &cfg.animated;
+    let target = (anim.target_mb * 1_000_000.0) as u64;
     let aspect = tile_aspect(cfg.orientation, meta);
-    let l0 = animated_layout(cfg.grid, aspect, cfg.quality, 1.0);
+    // The animated grid always carries the full frame chrome (it's the
+    // shareable preview); the frame toggle governs the still image only.
+    let frame_tpl = inp.template.clone();
+    let l0 = animated_layout(cfg.grid, aspect, anim.quality, 1.0);
     let n = cfg.grid.tiles();
-    // Keep clip starts clear of the very end of the file
     let clip_len = ANIM_FRAMES as f64 / ANIM_FPS;
     let times: Vec<f64> = sample_times(meta.duration_s, n)
         .into_iter()
@@ -473,11 +563,11 @@ async fn generate_animated(
     }
 
     let dest = artifact_path(inp.source, cfg, ArtifactKind::Animated);
-    let ladder = anim_ladder(cfg.quality);
+    let ladder = anim_ladder(anim.quality, anim.format);
     let n_steps = ladder.len();
     for (i, step) in ladder.iter().enumerate() {
         ctl.check()?;
-        let l = animated_layout(cfg.grid, aspect, cfg.quality, step.scale);
+        let l = animated_layout(cfg.grid, aspect, anim.quality, step.scale);
         let mut af = AnimFrames {
             store: &mut store,
             indices: frame_indices(step),
@@ -489,9 +579,10 @@ async fn generate_animated(
             &l,
             inp.fonts,
             &hm,
+            &frame_tpl,
             &times,
-            cfg.timestamps,
             &mut af,
+            anim.format,
             step.q,
             ctl,
             base,
@@ -499,6 +590,7 @@ async fn generate_animated(
         )?;
         if bytes.len() as u64 <= target {
             atomic_write(&dest, &bytes)?;
+            remove_stale_siblings(inp.source, cfg, ArtifactKind::Animated, &dest);
             ctl.report(p0 + span);
             return Ok(ProducedArtifact {
                 kind: ArtifactKind::Animated,
@@ -509,107 +601,8 @@ async fn generate_animated(
         }
     }
     Err(Failure::QualityFloor(format!(
-        "animated grid ≥ {:.1} MB at fps/resolution floor",
-        cfg.target_mb
-    )))
-}
-
-async fn generate_montage(
-    inp: &JobInput<'_>,
-    ctl: &GenControl,
-    p0: f32,
-    span: f32,
-) -> Result<ProducedArtifact, Failure> {
-    let cfg = inp.config;
-    let meta = inp.meta;
-    let target = (cfg.target_mb * 1_000_000.0) as u64;
-    let aspect = tile_aspect(cfg.orientation, meta);
-    // Single cell (PRD FR14): bare frames, no chrome — sequential clips in one frame
-    let long = 420.0 + 2.4 * cfg.quality as f64;
-    let (w, h) = if aspect >= 1.0 {
-        (long as u32, (long / aspect) as u32)
-    } else {
-        ((long * aspect) as u32, long as u32)
-    };
-    let (w, h) = (w & !1, h & !1);
-
-    let seg_len = MONTAGE_SEG_FRAMES as f64 / ANIM_FPS;
-    let times: Vec<f64> = sample_times(meta.duration_s, MONTAGE_SEGMENTS as u32)
-        .into_iter()
-        .map(|t| t.min((meta.duration_s - seg_len - 0.1).max(0.0)))
-        .collect();
-
-    let mut all_frames: Vec<RgbImage> = Vec::new();
-    for (i, &t) in times.iter().enumerate() {
-        ctl.check()?;
-        let frames =
-            extract_clip(inp.source, t, ANIM_FPS, MONTAGE_SEG_FRAMES, w, h, meta.hdr).await?;
-        all_frames.extend(frames);
-        ctl.report(p0 + span * 0.6 * (i + 1) as f32 / times.len() as f32);
-    }
-
-    let dest = artifact_path(inp.source, cfg, ArtifactKind::Montage);
-    let base_q = (55.0 + 0.4 * cfg.quality as f32).min(92.0);
-    // quality → fps → length → resolution, same governed order as the grid
-    let attempts: [(f32, usize, f64); 6] = [
-        (base_q, 1, 1.0),
-        ((base_q - 14.0).max(38.0), 1, 1.0),
-        ((base_q - 28.0).max(38.0), 1, 1.0),
-        ((base_q - 28.0).max(38.0), 2, 1.0), // half fps
-        ((base_q - 28.0).max(38.0), 2, 0.8),
-        ((base_q - 28.0).max(38.0), 2, 0.65),
-    ];
-    for (i, (q, stride, sc)) in attempts.iter().enumerate() {
-        ctl.check()?;
-        let (sw, sh) = (((w as f64 * sc) as u32) & !1, ((h as f64 * sc) as u32) & !1);
-        let fps_out = ANIM_FPS / *stride as f64;
-        let mut enc = webp_animation::Encoder::new_with_options(
-            (sw.max(2), sh.max(2)),
-            webp_animation::EncoderOptions {
-                encoding_config: Some(webp_animation::EncodingConfig {
-                    quality: *q,
-                    method: 4,
-                    encoding_type: webp_animation::EncodingType::Lossy(
-                        webp_animation::LossyEncodingConfig::default(),
-                    ),
-                }),
-                ..Default::default()
-            },
-        )
-        .map_err(|e| Failure::DecodeError(format!("webp encoder: {e}")))?;
-        let picked: Vec<&RgbImage> = all_frames.iter().step_by(*stride).collect();
-        for (j, fr) in picked.iter().enumerate() {
-            ctl.check()?;
-            let img = if *sc < 1.0 {
-                image::imageops::resize(
-                    *fr,
-                    sw.max(2),
-                    sh.max(2),
-                    image::imageops::FilterType::Triangle,
-                )
-            } else {
-                (*fr).clone()
-            };
-            enc.add_frame(&rgb_to_rgba(&img), (j as f64 * 1000.0 / fps_out) as i32)
-                .map_err(|e| Failure::DecodeError(format!("webp frame: {e}")))?;
-        }
-        let data = enc
-            .finalize((picked.len() as f64 * 1000.0 / fps_out) as i32)
-            .map_err(|e| Failure::DecodeError(format!("webp finalize: {e}")))?;
-        if data.len() as u64 <= target {
-            atomic_write(&dest, &data)?;
-            ctl.report(p0 + span);
-            return Ok(ProducedArtifact {
-                kind: ArtifactKind::Montage,
-                path: dest.to_string_lossy().into(),
-                bytes: data.len() as u64,
-                degraded: i > 0,
-            });
-        }
-    }
-    Err(Failure::QualityFloor(format!(
-        "montage ≥ {:.1} MB at floor",
-        cfg.target_mb
+        "animated preview ≥ {:.1} MB at fps/resolution floor",
+        anim.target_mb
     )))
 }
 
@@ -622,6 +615,7 @@ type ArtifactFut<'a> = std::pin::Pin<
 pub async fn run_job(
     source: &Path,
     config: &JobConfig,
+    template: &FrameTemplate,
     fonts: &Fonts,
     ctl: &GenControl,
 ) -> Result<(VideoMeta, JobOutcome), Failure> {
@@ -641,6 +635,7 @@ pub async fn run_job(
         title,
         config,
         meta: &meta,
+        template,
         fonts,
     };
 
@@ -656,49 +651,38 @@ pub async fn run_job(
         if !on {
             continue;
         }
-        let existing = match kind {
-            ArtifactKind::Static => {
-                exists_valid(&artifact_path(source, config, kind))
-                    || exists_valid(&static_jpg_path(source, config))
-            }
-            _ => exists_valid(&artifact_path(source, config, kind)),
-        };
-        if existing && !ctl.overwrite {
+        if exists_valid(&artifact_path(source, config, kind)) && !ctl.overwrite {
             skipped.push(kind);
         } else {
             wanted.push(kind);
         }
     }
 
-    let weights: f32 = wanted
-        .iter()
-        .map(|k| match k {
-            ArtifactKind::Static => 1.0,
-            ArtifactKind::Animated => 3.0,
-            ArtifactKind::Montage => 1.5,
-        })
-        .sum();
+    let weight_of = |k: &ArtifactKind| match k {
+        ArtifactKind::Static => 1.0f32,
+        ArtifactKind::Animated => 3.0,
+        ArtifactKind::Montage => 0.5,
+    };
+    let weights: f32 = wanted.iter().map(weight_of).sum();
 
     let mut artifacts = Vec::new();
     let mut p0 = 0.05f32;
     for kind in wanted {
-        let w = match kind {
-            ArtifactKind::Static => 1.0,
-            ArtifactKind::Animated => 3.0,
-            ArtifactKind::Montage => 1.5,
-        } / weights
-            * 0.95;
+        let w = weight_of(&kind) / weights * 0.95;
         let (fut, budget): (ArtifactFut<'_>, Duration) = match kind {
-            ArtifactKind::Static => (Box::pin(generate_static(&inp, ctl, p0, w)), STATIC_TIMEOUT),
+            ArtifactKind::Static => (
+                Box::pin(generate_still(&inp, ArtifactKind::Static, ctl, p0, w)),
+                STATIC_TIMEOUT,
+            ),
             ArtifactKind::Animated => (Box::pin(generate_animated(&inp, ctl, p0, w)), ANIM_TIMEOUT),
             ArtifactKind::Montage => (
-                Box::pin(generate_montage(&inp, ctl, p0, w)),
+                Box::pin(generate_still(&inp, ArtifactKind::Montage, ctl, p0, w)),
                 MONTAGE_TIMEOUT,
             ),
         };
         let art = tokio::time::timeout(budget, fut)
             .await
-            .map_err(|_| Failure::Timeout(format!("{:?} artifact exceeded time budget", kind)))??;
+            .map_err(|_| Failure::Timeout(format!("{kind:?} artifact exceeded time budget")))??;
         artifacts.push(art);
         p0 += w;
     }

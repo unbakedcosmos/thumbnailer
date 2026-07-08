@@ -55,37 +55,210 @@ pub enum OutputMode {
     Custom,
 }
 
-/// The template spec (PRD §5): single source of truth every artifact is derived from.
+/// Static / montage image format (CHANGELOG §1: File type PNG / JPEG / WebP).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum StaticFormat {
+    #[default]
+    Png,
+    Jpeg,
+    Webp,
+}
+
+impl StaticFormat {
+    pub fn ext(&self) -> &'static str {
+        match self {
+            StaticFormat::Png => "png",
+            StaticFormat::Jpeg => "jpg",
+            StaticFormat::Webp => "webp",
+        }
+    }
+}
+
+/// Animated preview format (CHANGELOG §1: WebP / GIF).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AnimatedFormat {
+    #[default]
+    Webp,
+    Gif,
+}
+
+impl AnimatedFormat {
+    pub fn ext(&self) -> &'static str {
+        match self {
+            AnimatedFormat::Webp => "webp",
+            AnimatedFormat::Gif => "gif",
+        }
+    }
+}
+
+/// Static & montage image knobs (CHANGELOG §1.3): format / sharpen / frame /
+/// compression quality. Static output is NOT size-gated — the target gate
+/// belongs to the animated preview only.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct StaticConfig {
+    pub format: StaticFormat,
+    /// Compression quality for JPEG/WebP (PNG is lossless — ignored)
+    pub quality: u8,
+    /// Post-process sharpen on extracted frames
+    pub sharpen: bool,
+    /// Frame toggle: off = raw grab (hairline border, no band, no timestamps)
+    pub frame_on: bool,
+    /// Sheet-frame template id (templates are user data, CHANGELOG §2)
+    pub template_id: String,
+}
+
+impl Default for StaticConfig {
+    fn default() -> Self {
+        StaticConfig {
+            format: StaticFormat::Png,
+            quality: 80,
+            sharpen: false,
+            frame_on: true,
+            template_id: "classic".into(),
+        }
+    }
+}
+
+/// Animated preview knobs (CHANGELOG §1.4): format / target gate / quality.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AnimatedConfig {
+    pub format: AnimatedFormat,
+    /// 0–100 slider: size ↔ crispness
+    pub quality: u8,
+    /// Hard size ceiling in MB — the size-gate control (PRD FR16)
+    pub target_mb: f64,
+}
+
+impl Default for AnimatedConfig {
+    fn default() -> Self {
+        AnimatedConfig {
+            format: AnimatedFormat::Webp,
+            quality: 62,
+            target_mb: 8.0,
+        }
+    }
+}
+
+/// The per-file config (CHANGELOG §1 build note: grid/orientation shared,
+/// static and animated knobs split into their own panels).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct JobConfig {
     pub grid: GridDims,
     pub orientation: OrientationMode,
-    /// 0–100 slider: size ↔ crispness (PRD FR20)
-    pub quality: u8,
-    /// Per-artifact hard size ceiling in MB (PRD FR16, default 8)
-    pub target_mb: f64,
     pub artifacts: ArtifactSet,
+    #[serde(rename = "static")]
+    pub static_cfg: StaticConfig,
+    pub animated: AnimatedConfig,
     pub output_mode: OutputMode,
     pub output_path: Option<String>,
-    /// Timestamp overlay per tile (PRD FR9, toggleable)
-    pub timestamps: bool,
 }
 
-impl Default for JobConfig {
+// ---------------------------------------------------------------- templates
+
+/// Sheet-frame template (CHANGELOG §2): controls only the frame around the
+/// static sheet — grid/quality stay separate controls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum BorderStyle {
+    None,
+    #[default]
+    Hairline,
+    Thick,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TimestampStyle {
+    None,
+    #[default]
+    Corner,
+    Overlay,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AccentChoice {
+    #[default]
+    Mint,
+    White,
+    None,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct FrameTemplate {
+    pub id: String,
+    pub name: String,
+    pub header_band: bool,
+    pub border: BorderStyle,
+    pub timestamp_style: TimestampStyle,
+    pub accent: AccentChoice,
+    pub builtin: bool,
+}
+
+impl Default for FrameTemplate {
     fn default() -> Self {
-        JobConfig {
-            grid: GridDims::default(),
-            orientation: OrientationMode::default(),
-            quality: 62,
-            target_mb: 8.0,
-            artifacts: ArtifactSet::default(),
-            output_mode: OutputMode::default(),
-            output_path: None,
-            timestamps: true,
+        FrameTemplate {
+            id: "classic".into(),
+            name: "Classic".into(),
+            header_band: true,
+            border: BorderStyle::Hairline,
+            timestamp_style: TimestampStyle::Corner,
+            accent: AccentChoice::Mint,
+            builtin: true,
         }
     }
 }
+
+/// The three shipped built-ins (CHANGELOG §2): cannot be edited or deleted.
+pub fn builtin_templates() -> Vec<FrameTemplate> {
+    vec![
+        FrameTemplate::default(),
+        FrameTemplate {
+            id: "minimal".into(),
+            name: "Minimal".into(),
+            header_band: false,
+            border: BorderStyle::Hairline,
+            timestamp_style: TimestampStyle::None,
+            accent: AccentChoice::None,
+            builtin: true,
+        },
+        FrameTemplate {
+            id: "bold".into(),
+            name: "Bold".into(),
+            header_band: true,
+            border: BorderStyle::Thick,
+            timestamp_style: TimestampStyle::Overlay,
+            accent: AccentChoice::Mint,
+            builtin: true,
+        },
+    ]
+}
+
+/// The frame actually applied to a render: frame-off drops to a raw grab
+/// (hairline border, no band, no timestamps) regardless of template.
+pub fn effective_frame(frame_on: bool, tpl: &FrameTemplate) -> FrameTemplate {
+    if frame_on {
+        tpl.clone()
+    } else {
+        FrameTemplate {
+            id: "raw".into(),
+            name: "raw grab".into(),
+            header_band: false,
+            border: BorderStyle::Hairline,
+            timestamp_style: TimestampStyle::None,
+            accent: AccentChoice::None,
+            builtin: true,
+        }
+    }
+}
+
+// ---------------------------------------------------------------- probe
 
 /// What ffprobe tells us about a source file (PRD §10).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,13 +325,32 @@ pub enum ArtifactKind {
 }
 
 impl ArtifactKind {
-    /// Output naming convention (PRD FR23). Static falls back to `_contact.jpg`
-    /// (not .webp) so it never collides with the animated grid's name.
-    pub fn suffix(&self) -> &'static str {
+    /// Output naming convention (CHANGELOG §3): suffix + extension follow the
+    /// per-artifact file-type choices, so names never collide.
+    pub fn suffix(&self, config: &JobConfig) -> String {
         match self {
-            ArtifactKind::Static => "_contact.png",
-            ArtifactKind::Animated => "_contact.webp",
-            ArtifactKind::Montage => "_loop.webp",
+            ArtifactKind::Static => format!("_contact.{}", config.static_cfg.format.ext()),
+            ArtifactKind::Animated => format!("_animated.{}", config.animated.format.ext()),
+            ArtifactKind::Montage => format!("_montage.{}", config.static_cfg.format.ext()),
+        }
+    }
+
+    /// Every extension this artifact could have been written with — used to
+    /// clean up stale siblings when the user switches formats.
+    pub fn all_suffixes(&self) -> Vec<String> {
+        match self {
+            ArtifactKind::Static => ["png", "jpg", "webp"]
+                .iter()
+                .map(|e| format!("_contact.{e}"))
+                .collect(),
+            ArtifactKind::Animated => ["webp", "gif"]
+                .iter()
+                .map(|e| format!("_animated.{e}"))
+                .collect(),
+            ArtifactKind::Montage => ["png", "jpg", "webp"]
+                .iter()
+                .map(|e| format!("_montage.{e}"))
+                .collect(),
         }
     }
 }

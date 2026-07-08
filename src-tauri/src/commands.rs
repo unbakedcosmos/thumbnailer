@@ -2,7 +2,7 @@
 //! commands; progress arrives as events, never client-side timers).
 
 use crate::queue::{BatchView, Engine, Job, Settings};
-use crate::types::JobConfig;
+use crate::types::{FrameTemplate, JobConfig};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::State;
@@ -102,4 +102,25 @@ pub async fn set_settings(engine: Eng<'_>, settings: Settings) -> Result<(), Str
 #[tauri::command]
 pub async fn ffmpeg_version() -> Result<Option<String>, String> {
     Ok(crate::ffmpeg::ffmpeg_version().await)
+}
+
+// Frame templates are user data (CHANGELOG §2): persisted in templates.json,
+// shared across batches and sessions.
+
+#[tauri::command]
+pub async fn list_templates(engine: Eng<'_>) -> Result<Vec<FrameTemplate>, String> {
+    Ok(engine.templates.list())
+}
+
+#[tauri::command]
+pub async fn save_template(
+    engine: Eng<'_>,
+    template: FrameTemplate,
+) -> Result<FrameTemplate, String> {
+    engine.templates.save(template)
+}
+
+#[tauri::command]
+pub async fn delete_template(engine: Eng<'_>, id: String) -> Result<(), String> {
+    engine.templates.delete(&id)
 }

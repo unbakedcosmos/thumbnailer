@@ -5,6 +5,7 @@
 
 use crate::pipeline::{run_job, GenControl};
 use crate::render::Fonts;
+use crate::templates::TemplateStore;
 use crate::types::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -73,6 +74,8 @@ pub struct Settings {
     pub concurrency: usize,
     pub preset: String,
     pub overwrite: bool,
+    /// Seeds the animated target for newly-added files (CHANGELOG §3)
+    pub default_target_mb: f64,
 }
 
 impl Default for Settings {
@@ -86,6 +89,7 @@ impl Default for Settings {
             concurrency: (cores / 2).clamp(1, 4),
             preset: "Balanced".into(),
             overwrite: false,
+            default_target_mb: 8.0,
         }
     }
 }
@@ -101,6 +105,7 @@ struct EngineState {
 pub struct Engine {
     state: Arc<Mutex<EngineState>>,
     pub settings: Arc<Mutex<Settings>>,
+    pub templates: TemplateStore,
     emitter: Emitter,
     fonts: Arc<Fonts>,
     next_id: AtomicU64,
@@ -121,6 +126,7 @@ impl Engine {
         Arc::new(Engine {
             state: Arc::new(Mutex::new(EngineState::default())),
             settings: Arc::new(Mutex::new(settings)),
+            templates: TemplateStore::new(&data_dir),
             emitter,
             fonts: Arc::new(Fonts::load()),
             next_id: AtomicU64::new(1),
@@ -256,7 +262,8 @@ impl Engine {
             }
         }
         files.sort();
-        let default_config = JobConfig::default();
+        let mut default_config = JobConfig::default();
+        default_config.animated.target_mb = self.settings.lock().unwrap().default_target_mb;
         let mut added = 0;
         {
             let mut st = self.state.lock().unwrap();
@@ -562,7 +569,8 @@ impl Engine {
             overwrite,
             progress,
         };
-        let result = run_job(&path, &config, &self.fonts, &ctl).await;
+        let template = self.templates.get(&config.static_cfg.template_id);
+        let result = run_job(&path, &config, &template, &self.fonts, &ctl).await;
 
         let mut st = self.state.lock().unwrap();
         st.cancels.remove(&id);

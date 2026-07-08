@@ -6,6 +6,8 @@
   import Editor from '$lib/Editor.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
   import SettingsModal from '$lib/SettingsModal.svelte';
+  import TemplateGallery from '$lib/TemplateGallery.svelte';
+  import TemplateEditor from '$lib/TemplateEditor.svelte';
 
   onMount(() => {
     init();
@@ -33,8 +35,10 @@
       else if (app.batch.status === 'paused' || app.batch.status === 'ready') startBatch();
     } else if (e.key === 'f' || e.key === 'F') {
       app.follow = !app.follow;
-    } else if (e.key === 'Escape' && app.settingsOpen) {
-      app.settingsOpen = false;
+    } else if (e.key === 'Escape') {
+      if (app.templateEditor) app.templateEditor = null;
+      else if (app.templateGalleryOpen) app.templateGalleryOpen = false;
+      else if (app.settingsOpen) app.settingsOpen = false;
     }
   }
 </script>
@@ -58,6 +62,10 @@
   {#if app.settingsOpen}
     <SettingsModal />
   {/if}
+  {#if app.templateGalleryOpen}
+    <TemplateGallery />
+  {/if}
+  <TemplateEditor />
 </div>
 
 <style>

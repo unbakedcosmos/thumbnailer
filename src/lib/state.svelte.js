@@ -15,9 +15,29 @@ export const GRID_PRESETS = [
 
 // Ships with sensible defaults (PRD FR21); applied to newly added files.
 export const PRESETS = {
-  Small: { quality: 40, targetMb: 4 },
-  Balanced: { quality: 62, targetMb: 8 },
-  'Max quality': { quality: 85, targetMb: 12 }
+  Small: { animQuality: 40, targetMb: 4, staticQuality: 60 },
+  Balanced: { animQuality: 62, targetMb: 8, staticQuality: 80 },
+  'Max quality': { animQuality: 85, targetMb: 12, staticQuality: 92 }
+};
+
+export const VIDEO_FILTER = {
+  name: 'Videos',
+  extensions: [
+    'mp4',
+    'm4v',
+    'mov',
+    'mkv',
+    'webm',
+    'avi',
+    'wmv',
+    'flv',
+    'ts',
+    'm2ts',
+    'mpg',
+    'mpeg',
+    'mts',
+    '3gp'
+  ]
 };
 
 export const app = $state({
@@ -26,13 +46,28 @@ export const app = $state({
   selectedId: null,
   settingsOpen: false,
   follow: true,
+  queueFilter: 'all', // 'all' | 'issues'
   resumedNote: null,
   ffmpegVersion: null,
-  settings: { concurrency: 2, preset: 'Balanced', overwrite: false }
+  settings: { concurrency: 2, preset: 'Balanced', overwrite: false, defaultTargetMb: 8 },
+  templates: [],
+  templateGalleryOpen: false,
+  templateEditor: null // { id, name, headerBand, border, timestampStyle, accent, isNew }
 });
 
 export function selectedJob() {
   return app.jobs.find((j) => j.id === app.selectedId) ?? null;
+}
+
+export function visibleJobs() {
+  if (app.queueFilter === 'issues') {
+    return app.jobs.filter((j) => j.status === 'failed' || j.status === 'skipped');
+  }
+  return app.jobs;
+}
+
+export function templateById(id) {
+  return app.templates.find((t) => t.id === id) ?? app.templates[0] ?? null;
 }
 
 function mergeJob(job) {
@@ -63,6 +98,7 @@ export async function init() {
   });
 
   app.settings = await invoke('get_settings');
+  app.templates = await invoke('list_templates');
   invoke('ffmpeg_version').then((v) => (app.ffmpegVersion = v));
 
   // Crash/close resume (PRD FR6): restore instead of restarting.
@@ -89,8 +125,8 @@ export async function addPaths(paths) {
   if (preset) {
     for (const j of app.jobs) {
       if (!known.has(j.id)) {
-        j.config.quality = preset.quality;
-        j.config.targetMb = preset.targetMb;
+        j.config.animated.quality = preset.animQuality;
+        j.config.static.quality = preset.staticQuality;
         invoke('set_job_config', { id: j.id, config: $state.snapshot(j.config) });
       }
     }
@@ -103,6 +139,12 @@ export async function pickFolder() {
   if (dir) await addPaths([dir]);
 }
 
+// "+ Add files": single/multi-file picker, not just folder scan (CHANGELOG §3)
+export async function pickFiles() {
+  const files = await open({ multiple: true, title: 'Add files', filters: [VIDEO_FILTER] });
+  if (files?.length) await addPaths(files);
+}
+
 export function syncJobConfig(job) {
   invoke('set_job_config', { id: job.id, config: $state.snapshot(job.config) });
 }
@@ -111,6 +153,13 @@ export function generateSelected() {
   const job = selectedJob();
   if (!job || job.status === 'running') return;
   invoke('generate_one', { id: job.id, config: $state.snapshot(job.config) });
+}
+
+export function retryJob(id) {
+  const job = app.jobs.find((j) => j.id === id);
+  if (!job || job.status === 'running') return;
+  app.selectedId = id;
+  invoke('generate_one', { id, config: $state.snapshot(job.config) });
 }
 
 export function applyConfigToBatch() {
@@ -127,6 +176,51 @@ export const stopBatch = () => invoke('stop_batch');
 
 export function saveSettings() {
   invoke('set_settings', { settings: $state.snapshot(app.settings) });
+}
+
+// ------------------------------------------------------------ templates
+
+export async function saveTemplate(draft) {
+  const saved = await invoke('save_template', { template: draft });
+  const i = app.templates.findIndex((t) => t.id === saved.id);
+  if (i >= 0) app.templates[i] = saved;
+  else app.templates.push(saved);
+  return saved;
+}
+
+export async function deleteTemplate(id) {
+  await invoke('delete_template', { id });
+  app.templates = app.templates.filter((t) => t.id !== id);
+  // Files pointing at the deleted template fall back to Classic
+  for (const j of app.jobs) {
+    if (j.config.static.templateId === id) {
+      j.config.static.templateId = 'classic';
+      syncJobConfig(j);
+    }
+  }
+}
+
+/// Import stand-in (CHANGELOG §2: thinnest possible entry point; real flow TBD)
+export async function importTemplate() {
+  await saveTemplate({
+    id: '',
+    name: 'Imported template',
+    headerBand: true,
+    border: 'hairline',
+    timestampStyle: 'overlay',
+    accent: 'white',
+    builtin: false
+  });
+}
+
+export function accentColor(a) {
+  return a === 'mint' ? '#9fe8b0' : a === 'white' ? '#eef0f4' : '#5b606c';
+}
+
+export function borderFor(border, accent) {
+  if (border === 'none') return 'none';
+  if (border === 'thick') return '2px solid ' + accentColor(accent);
+  return '1px solid #2a2c33';
 }
 
 // ------------------------------------------------------------ helpers
@@ -149,16 +243,33 @@ export function jobIsPortrait(job) {
   return job.meta ? job.meta.height > job.meta.width : false;
 }
 
-/// Live size estimate (mint mono-num readout) — an estimate, not the encode.
-export function estimateMB(job) {
+/// Animated estimate (mint mono-num readout) — an estimate, not the encode.
+export function estimateAnimatedMB(job) {
   const c = job.config;
   const tiles = c.grid.cols * c.grid.rows;
-  const q = c.quality / 100;
-  let mb = 0;
-  if (c.artifacts.animated) mb += (0.6 + 9.0 * q * q) * (tiles / 27);
-  if (c.artifacts.staticSheet) mb += 0.3 + 2.2 * q * (tiles / 27);
-  if (c.artifacts.montage) mb += 0.2 + 0.9 * q;
-  return Math.max(0.1, mb);
+  const q = c.animated.quality / 100;
+  const base = Math.max(0.8, q * 9.5) * (tiles / 27);
+  return c.animated.format === 'gif' ? base * 1.8 : base;
+}
+
+/// Static / montage estimate (per prototype: tiles × factor, PNG fixed).
+export function estimateStaticMB(job) {
+  const c = job.config;
+  const effTiles = c.artifacts.staticSheet ? c.grid.cols * c.grid.rows : 1;
+  const isPng = c.static.format === 'png';
+  const factor = isPng ? 1 : 0.15 + (c.static.quality / 100) * 0.8;
+  return Math.max(0.3, effTiles * 0.14 * factor);
+}
+
+const EXT = { png: 'png', jpeg: 'jpg', webp: 'webp', gif: 'gif' };
+
+export function outputFilesNote(job) {
+  const c = job.config;
+  const parts = [];
+  if (c.artifacts.staticSheet) parts.push('_contact.' + EXT[c.static.format]);
+  if (c.artifacts.animated) parts.push('_animated.' + EXT[c.animated.format]);
+  if (c.artifacts.montage) parts.push('_montage.' + EXT[c.static.format]);
+  return parts.length ? parts.join(' · ') : 'no artifacts selected';
 }
 
 export function writesTo(job) {

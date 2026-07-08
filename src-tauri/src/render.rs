@@ -3,7 +3,9 @@
 //! the header — so every artifact derives from the same template spec.
 
 use crate::theme;
-use crate::types::{GridDims, OrientationMode, VideoMeta};
+use crate::types::{
+    AccentChoice, BorderStyle, FrameTemplate, GridDims, OrientationMode, TimestampStyle, VideoMeta,
+};
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
 use image::{Rgb, RgbImage};
 
@@ -129,8 +131,10 @@ pub fn tile_aspect(mode: OrientationMode, meta: &VideoMeta) -> f64 {
     }
 }
 
-/// Build a layout at a given render scale (px per CSS unit).
-pub fn layout(grid: GridDims, aspect: f64, scale: f64) -> SheetLayout {
+/// Build a layout at a given render scale (px per CSS unit). `header` reserves
+/// the band area — templates without a header band (or frame-off raw grabs)
+/// start the grid right under the top padding.
+pub fn layout(grid: GridDims, aspect: f64, scale: f64, header: bool) -> SheetLayout {
     let cols = grid.cols.max(1);
     let rows = grid.rows.max(1);
     let tile_w_css = (CSS_CARD_W - 2.0 * CSS_PAD_X - (cols as f64 - 1.0) * CSS_GAP) / cols as f64;
@@ -144,9 +148,12 @@ pub fn layout(grid: GridDims, aspect: f64, scale: f64) -> SheetLayout {
     let pad_y = (CSS_PAD_Y * s).round() as u32;
     let hairline = (s.round().max(1.0)) as u32;
 
-    let header_h = ((CSS_HEADER_BLOCK_H + CSS_HEADER_PAD_B + CSS_HEADER_MARGIN_B) * s).round()
-        as u32
-        + hairline;
+    let header_h = if header {
+        ((CSS_HEADER_BLOCK_H + CSS_HEADER_PAD_B + CSS_HEADER_MARGIN_B) * s).round() as u32
+            + hairline
+    } else {
+        0
+    };
     let grid_top = pad_y + header_h;
     let card_w = 2 * pad_x + cols * tile_w + (cols - 1) * gap;
     let card_h = grid_top + rows * tile_h + (rows - 1) * gap + pad_y;
@@ -168,17 +175,31 @@ pub fn layout(grid: GridDims, aspect: f64, scale: f64) -> SheetLayout {
 }
 
 /// Layout for the static sheet: fixed 2× device scale (PRD FR20).
-pub fn static_layout(grid: GridDims, aspect: f64, scale_mult: f64) -> SheetLayout {
-    layout(grid, aspect, 2.0 * scale_mult)
+pub fn static_layout(grid: GridDims, aspect: f64, scale_mult: f64, header: bool) -> SheetLayout {
+    layout(grid, aspect, 2.0 * scale_mult, header)
 }
 
 /// Layout for the animated grid: scale chosen so the tile's long side hits the
 /// quality-mapped pixel budget (proven ~428px safe → ~640px crisp, PRD FR13).
 pub fn animated_layout(grid: GridDims, aspect: f64, quality: u8, scale_mult: f64) -> SheetLayout {
     let long_side = (280.0 + 3.6 * quality as f64) * scale_mult;
-    let probe = layout(grid, aspect, 1.0);
+    let probe = layout(grid, aspect, 1.0, true);
     let current_long = probe.tile_w.max(probe.tile_h) as f64;
-    layout(grid, aspect, (long_side / current_long).clamp(0.2, 4.0))
+    layout(
+        grid,
+        aspect,
+        (long_side / current_long).clamp(0.2, 4.0),
+        true,
+    )
+}
+
+/// Accent → pixel color (CHANGELOG §2: mint | white | none→dim).
+pub fn accent_rgb(a: AccentChoice) -> Rgb<u8> {
+    match a {
+        AccentChoice::Mint => theme::ACCENT,
+        AccentChoice::White => theme::TEXT,
+        AccentChoice::None => theme::TEXT_DIM,
+    }
 }
 
 impl SheetLayout {
@@ -253,21 +274,48 @@ pub struct HeaderMeta<'a> {
 }
 
 /// Render the chrome (card bg, border, header band, tile borders) once; tile
-/// pixels get blitted into the slots per frame.
-pub fn render_chrome(l: &SheetLayout, fonts: &Fonts, hm: &HeaderMeta) -> RgbImage {
+/// pixels get blitted into the slots per frame. The frame template drives the
+/// border weight/color, whether the header band exists, and the accent.
+pub fn render_chrome(
+    l: &SheetLayout,
+    fonts: &Fonts,
+    hm: &HeaderMeta,
+    frame: &FrameTemplate,
+) -> RgbImage {
     let mut img = RgbImage::from_pixel(l.card_w, l.card_h, theme::CARD);
     let s = l.scale as f32;
 
-    // Card border
-    stroke_rect(
-        &mut img,
-        0,
-        0,
-        l.card_w,
-        l.card_h,
-        l.hairline,
-        theme::BORDER,
-    );
+    // Card border per template (CHANGELOG §2: none | hairline | thick-accent)
+    match frame.border {
+        BorderStyle::None => {}
+        BorderStyle::Hairline => stroke_rect(
+            &mut img,
+            0,
+            0,
+            l.card_w,
+            l.card_h,
+            l.hairline,
+            theme::BORDER,
+        ),
+        BorderStyle::Thick => {
+            let t = (2.0 * l.scale).round().max(2.0) as u32;
+            stroke_rect(
+                &mut img,
+                0,
+                0,
+                l.card_w,
+                l.card_h,
+                t,
+                accent_rgb(frame.accent),
+            )
+        }
+    }
+
+    if !frame.header_band {
+        draw_tile_wells(&mut img, l);
+        return img;
+    }
+    let value_color = accent_rgb(frame.accent);
 
     // --- header band ---
     let x0 = l.pad_x as f32;
@@ -319,7 +367,7 @@ pub fn render_chrome(l: &SheetLayout, fonts: &Fonts, hm: &HeaderMeta) -> RgbImag
             &mut img,
             &fonts.medium,
             value_px,
-            theme::ACCENT,
+            value_color,
             cx + w - vw,
             y0 + label_h + value_gap,
             0.0,
@@ -356,21 +404,17 @@ pub fn render_chrome(l: &SheetLayout, fonts: &Fonts, hm: &HeaderMeta) -> RgbImag
         theme::BORDER_STRONG,
     );
 
-    // Tile wells + borders
+    draw_tile_wells(&mut img, l);
+    img
+}
+
+fn draw_tile_wells(img: &mut RgbImage, l: &SheetLayout) {
     for i in 0..(l.cols * l.rows) {
         let (tx, ty) = l.tile_origin(i);
-        fill_rect(&mut img, tx, ty, l.tile_w, l.tile_h, theme::SURFACE2);
-        stroke_rect(
-            &mut img,
-            tx,
-            ty,
-            l.tile_w,
-            l.tile_h,
-            l.hairline,
-            theme::BORDER,
-        );
+        fill_rect(img, tx, ty, l.tile_w, l.tile_h, theme::SURFACE2);
+        stroke_rect(img, tx, ty, l.tile_w, l.tile_h, l.hairline, theme::BORDER);
         round_corners(
-            &mut img,
+            img,
             tx,
             ty,
             l.tile_w,
@@ -379,8 +423,6 @@ pub fn render_chrome(l: &SheetLayout, fonts: &Fonts, hm: &HeaderMeta) -> RgbImag
             theme::CARD,
         );
     }
-
-    img
 }
 
 /// Blit one tile image into its slot (inside the 1px border), re-rounding corners.
@@ -411,8 +453,21 @@ pub fn blit_tile(img: &mut RgbImage, l: &SheetLayout, idx: u32, tile: &RgbImage)
     );
 }
 
-/// Timestamp pill, bottom-right of a tile (PRD FR9).
-pub fn draw_timestamp(img: &mut RgbImage, l: &SheetLayout, idx: u32, fonts: &Fonts, text: &str) {
+/// Per-tile timestamp, bottom-right (PRD FR9). Style per the frame template
+/// (CHANGELOG §2): `corner` = small dim label on a subtle dark backing so it
+/// stays readable on bright frames; `overlay` = filled accent chip.
+pub fn draw_timestamp(
+    img: &mut RgbImage,
+    l: &SheetLayout,
+    idx: u32,
+    fonts: &Fonts,
+    text: &str,
+    style: TimestampStyle,
+    accent: AccentChoice,
+) {
+    if style == TimestampStyle::None {
+        return;
+    }
     let s = l.scale as f32;
     let px = 10.0 * s;
     let pad_x = 5.0 * s;
@@ -424,22 +479,56 @@ pub fn draw_timestamp(img: &mut RgbImage, l: &SheetLayout, idx: u32, fonts: &Fon
     let (tx, ty) = l.tile_origin(idx);
     let bx = tx + l.tile_w - bw - margin.round() as u32;
     let by = ty + l.tile_h - bh - margin.round() as u32;
-    // Semi-transparent dark pill
-    for yy in by..(by + bh).min(img.height()) {
-        for xx in bx..(bx + bw).min(img.width()) {
-            blend(img.get_pixel_mut(xx, yy), Rgb([0, 0, 0]), 0.62);
+
+    match style {
+        TimestampStyle::Overlay => {
+            // Filled accent chip, dark text ('none' accent falls back to mint,
+            // matching the prototype)
+            let fill = if accent == AccentChoice::None {
+                accent_rgb(AccentChoice::Mint)
+            } else {
+                accent_rgb(accent)
+            };
+            fill_rect(img, bx, by, bw, bh, fill);
+            round_corners(
+                img,
+                bx,
+                by,
+                bw,
+                bh,
+                (2.0 * s).round() as u32,
+                theme::SURFACE2,
+            );
+            draw_text(
+                img,
+                &fonts.bold,
+                px,
+                Rgb([0x0b, 0x12, 0x0d]),
+                bx as f32 + pad_x,
+                by as f32 + pad_y,
+                0.0,
+                text,
+            );
         }
+        TimestampStyle::Corner => {
+            for yy in by..(by + bh).min(img.height()) {
+                for xx in bx..(bx + bw).min(img.width()) {
+                    blend(img.get_pixel_mut(xx, yy), Rgb([0, 0, 0]), 0.45);
+                }
+            }
+            draw_text(
+                img,
+                &fonts.medium,
+                px,
+                theme::TEXT,
+                bx as f32 + pad_x,
+                by as f32 + pad_y,
+                0.0,
+                text,
+            );
+        }
+        TimestampStyle::None => unreachable!(),
     }
-    draw_text(
-        img,
-        &fonts.medium,
-        px,
-        theme::TEXT,
-        bx as f32 + pad_x,
-        by as f32 + pad_y,
-        0.0,
-        text,
-    );
 }
 
 pub fn fmt_timestamp(t: f64) -> String {

@@ -9,6 +9,10 @@
     app.settings.preset = p;
     saveSettings();
   }
+  function bumpDefaultTarget(d) {
+    app.settings.defaultTargetMb = Math.min(32, Math.max(1, app.settings.defaultTargetMb + d));
+    saveSettings();
+  }
   function toggleOverwrite() {
     app.settings.overwrite = !app.settings.overwrite;
     saveSettings();
@@ -63,6 +67,18 @@
               onclick={() => setPreset(p)}>{p}</button
             >
           {/each}
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <div class="label">Default target size</div>
+          <div class="help">used for newly added files · per-file override in editor</div>
+        </div>
+        <div class="stepper">
+          <button onclick={() => bumpDefaultTarget(-1)} aria-label="Smaller">−</button>
+          <span class="val">{app.settings.defaultTargetMb} MB</span>
+          <button onclick={() => bumpDefaultTarget(1)} aria-label="Larger">+</button>
         </div>
       </div>
 

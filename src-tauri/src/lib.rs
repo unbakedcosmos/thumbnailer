@@ -5,6 +5,7 @@ pub mod pipeline;
 pub mod probe;
 pub mod queue;
 pub mod render;
+pub mod templates;
 pub mod theme;
 pub mod types;
 
@@ -55,6 +56,9 @@ pub fn run() {
             commands::get_settings,
             commands::set_settings,
             commands::ffmpeg_version,
+            commands::list_templates,
+            commands::save_template,
+            commands::delete_template,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,5 +1,12 @@
 <script>
-  import { app, pickFolder, startBatch, pauseBatch, stopBatch } from '$lib/state.svelte.js';
+  import {
+    app,
+    pickFolder,
+    pickFiles,
+    startBatch,
+    pauseBatch,
+    stopBatch
+  } from '$lib/state.svelte.js';
 
   const settled = $derived(app.batch.done + app.batch.failed + app.batch.skipped);
   const pct = $derived(app.batch.total ? (settled / app.batch.total) * 100 : 0);
@@ -8,6 +15,7 @@
 <header>
   <div class="wordmark">thumbnailer<span class="dot-accent">.</span></div>
   <button class="btn-ghost" onclick={pickFolder}>+ Add folder</button>
+  <button class="btn-ghost" onclick={pickFiles}>+ Add files</button>
   <div class="spacer"></div>
 
   {#if app.resumedNote}

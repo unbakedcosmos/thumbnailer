@@ -1,5 +1,9 @@
 <script>
-  import { app, fmtMB } from '$lib/state.svelte.js';
+  import { app, fmtMB, visibleJobs, retryJob } from '$lib/state.svelte.js';
+
+  const issuesCount = $derived(
+    app.jobs.filter((j) => j.status === 'failed' || j.status === 'skipped').length
+  );
 
   let listEl;
 
@@ -42,13 +46,28 @@
 
 <aside>
   <div class="rail-head">
-    <span class="label">Queue · {app.jobs.length}</span>
-    <button class="follow" class:on={app.follow} onclick={() => (app.follow = !app.follow)}
-      >follow ▸running</button
+    <div class="seg-group">
+      <button
+        class="seg"
+        class:active={app.queueFilter === 'all'}
+        onclick={() => (app.queueFilter = 'all')}>All</button
+      >
+      <button
+        class="seg"
+        class:active={app.queueFilter === 'issues'}
+        onclick={() => (app.queueFilter = 'issues')}
+        >Issues{issuesCount ? ` (${issuesCount})` : ''}</button
+      >
+    </div>
+    <button
+      class="follow"
+      class:on={app.follow}
+      onclick={() => (app.follow = !app.follow)}
+      title="Auto-scroll to the running row (F)">follow ▸running</button
     >
   </div>
   <div class="list" bind:this={listEl}>
-    {#each app.jobs as job (job.id)}
+    {#each visibleJobs() as job (job.id)}
       {@const m = metaFor(job)}
       <div
         class="row"
@@ -64,6 +83,15 @@
         <span class="dot {job.status}" aria-hidden="true"></span>
         <span class="name">{job.name}</span>
         <span class="meta {m.cls}">{m.text}</span>
+        {#if job.status === 'failed'}
+          <button
+            class="retry-pill"
+            onclick={(e) => {
+              e.stopPropagation();
+              retryJob(job.id);
+            }}>retry</button
+          >
+        {/if}
       </div>
     {/each}
   </div>
@@ -85,6 +113,17 @@
     align-items: center;
     justify-content: space-between;
     padding: 12px 14px 8px;
+    gap: 10px;
+  }
+  .retry-pill {
+    font-size: 10px;
+    color: var(--danger);
+    border: 1px solid var(--danger);
+    border-radius: var(--r-sm);
+    padding: 2px 6px;
+    cursor: pointer;
+    flex: 0 0 auto;
+    background: transparent;
   }
   .follow {
     font-size: 12px;

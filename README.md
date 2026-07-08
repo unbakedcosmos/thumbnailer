@@ -1,34 +1,47 @@
 # thumbnailer.
 
-Bulk video → **static contact sheet** + **animated WebP preview**, every artifact
+Bulk video → **static contact sheet** + **animated preview**, the animated artifact
 guaranteed under a user-set size target. Tauri 2 shell, SvelteKit webview, Rust +
-ffmpeg core. Built from a BMAD spec set (PRD, EXPERIENCE, DESIGN, design handoff —
+ffmpeg core. Built from a BMAD spec set (PRD, EXPERIENCE, DESIGN, design handoff r2 —
 kept locally, not committed).
 
 ## What it does
 
-Drop a folder on the window (or **+ Add folder**). Every video becomes a queue row.
-Tune grid (3×9 default), orientation (Auto reads each source's aspect and fits
-without cropping), quality, target size (default 8 MB — a hard ceiling, not a wish),
-and which artifacts to make. **Start batch** processes the whole queue unattended
-with encode-aware concurrency; per-file failures are typed and isolated, the batch
-never stops for one bad file, and nothing oversize is ever written — an artifact
-that can't fit at the quality floor is reported, not shipped.
+Drop a folder on the window (or **+ Add folder** / **+ Add files**). Every video
+becomes a queue row. Grid (3×9 default) and orientation (Auto reads each source's
+aspect and fits without cropping) are shared; beyond that the two outputs have
+their own panels:
 
-Artifacts land in a `srcs/` subfolder next to each video:
+- **Static & montage image** — file type (PNG / JPEG / WebP), compression quality
+  (hidden for lossless PNG), post-process **sharpen**, and a **frame**: sheet
+  templates (Classic / Minimal / Bold built-ins + your own) controlling the header
+  band, border weight, per-tile timestamp style (corner / overlay chips) and
+  accent. Frame off = raw grab. Not size-gated.
+- **Animated preview** — file type (WebP / GIF), quality, and the **target size**
+  stepper (default 8 MB — a hard ceiling, not a wish). Bounded auto-fit degrades
+  quality → fps → loop length → resolution; below the floor the file is reported
+  as can't-fit, never written oversize.
 
-- `<basename>_contact.png` — static sheet (2× render; falls back to `_contact.jpg`
-  if PNG can't meet the target)
-- `<basename>_contact.webp` — animated grid, every tile a 2.5 s / 12 fps loop
-- `<basename>_loop.webp` — single-cell montage of sequential clips
+**Start batch** processes the whole queue unattended with encode-aware concurrency;
+per-file failures are typed and isolated. The queue rail filters All / Issues and
+failed rows carry an inline retry pill.
 
-Close or crash mid-batch and the manifest restores completed work on relaunch
-("Resumed — N left"); re-runs are idempotent unless Overwrite is on.
+Artifacts land in a `srcs/` subfolder next to each video (extensions follow the
+file-type choices):
+
+- `<basename>_contact.{png|jpg|webp}` — static sheet (2× render)
+- `<basename>_animated.{webp|gif}` — animated grid, every tile a 2.5 s / 12 fps loop
+- `<basename>_montage.{png|jpg|webp}` — one composed frame (single-cell still)
+
+Templates are user data in `templates.json` next to the app settings — they persist
+across sessions and batches. Close or crash mid-batch and the manifest restores
+completed work on relaunch ("Resumed — N left"); re-runs are idempotent unless
+Overwrite is on, and switching formats cleans up stale same-kind siblings.
 
 ## Keyboard
 
 ↑/↓ select row · Enter generate selected · Space pause/resume batch · F toggle
-follow-running · Esc close settings.
+follow-running · Esc close modals.
 
 ## Build & run
 
@@ -66,12 +79,16 @@ The frontend (`src/lib/*.svelte`) recreates `Thumbnailer.dc.html` from the desig
 handoff: queue rail, editor pane, settings overlay, empty state — tokens verbatim
 from DESIGN.md, real progress from Rust events.
 
-## Spec deviations worth knowing
+## Spec interpretations worth knowing
 
 - **Pause** stops dequeuing new files; in-flight encodes finish (an ffmpeg encode
   can't be frozen without losing its work). Stop cancels in-flight and resets
   running rows to queued.
-- **Static fallback** is JPEG (`_contact.jpg`), not WebP, so the name never
-  collides with the animated grid's `_contact.webp` (PRD OQ5 resolution).
+- **Montage** ("one composed frame", handoff r2 §1.2) is implemented as a 1×1
+  sheet: one representative frame at the video midpoint, carrying the same
+  format/sharpen/frame controls as the static sheet.
 - **Quality-floor misses surface as `skipped`** (warning) per the prototype's
   behavior; hard errors (unreadable/decode/timeout/disk-full) are `failed`.
+- The **animated grid keeps its frame chrome** regardless of the frame toggle —
+  the toggle governs the still image (r2 puts Frame in the static panel);
+  GIF's auto-fit ladder skips the quality rungs (no quality knob in GIF).

@@ -24,7 +24,7 @@ fn has_zscale() -> bool {
 
 /// Scale + letterbox chain into an exact w×h tile. Letterbox bars use
 /// surface-2 (#1f2126) per the design's tile-placeholder token.
-fn filter_chain(w: u32, h: u32, fps: Option<f64>, hdr: bool) -> String {
+fn filter_chain(w: u32, h: u32, fps: Option<f64>, hdr: bool, sharpen: bool) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(f) = fps {
         // fps filter also normalizes variable-frame-rate sources (NFR3)
@@ -42,6 +42,10 @@ fn filter_chain(w: u32, h: u32, fps: Option<f64>, hdr: bool) -> String {
         "scale={w}:{h}:force_original_aspect_ratio=decrease:flags=bicubic"
     ));
     parts.push(format!("pad={w}:{h}:-1:-1:color=0x1f2126"));
+    if sharpen {
+        // Post-process sharpen on extracted frames (CHANGELOG §1.3)
+        parts.push("unsharp=5:5:0.8:3:3:0.4".into());
+    }
     parts.push("setsar=1".into());
     parts.push("format=rgb24".into());
     parts.join(",")
@@ -139,8 +143,9 @@ pub async fn extract_frame(
     w: u32,
     h: u32,
     hdr: bool,
+    sharpen: bool,
 ) -> Result<RgbImage, Failure> {
-    let vf = filter_chain(w, h, None, hdr);
+    let vf = filter_chain(w, h, None, hdr, sharpen);
     let args: Vec<std::ffi::OsString> = vec![
         "-ss".into(),
         format!("{t:.3}").into(),
@@ -168,7 +173,7 @@ pub async fn extract_clip(
     hdr: bool,
 ) -> Result<Vec<RgbImage>, Failure> {
     let dur = n_frames as f64 / fps + 0.25;
-    let vf = filter_chain(w, h, Some(fps), hdr);
+    let vf = filter_chain(w, h, Some(fps), hdr, false);
     let args: Vec<std::ffi::OsString> = vec![
         "-ss".into(),
         format!("{t:.3}").into(),
