@@ -2,8 +2,8 @@
 
 Bulk video → **static contact sheet** + **animated WebP preview**, every artifact
 guaranteed under a user-set size target. Tauri 2 shell, SvelteKit webview, Rust +
-ffmpeg core. Built from the specs in `_bmad-output/` (PRD, EXPERIENCE, DESIGN,
-design handoff).
+ffmpeg core. Built from a BMAD spec set (PRD, EXPERIENCE, DESIGN, design handoff —
+kept locally, not committed).
 
 ## What it does
 

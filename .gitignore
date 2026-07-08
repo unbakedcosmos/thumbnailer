@@ -5,3 +5,9 @@ src-tauri/target/
 src-tauri/gen/schemas/
 thumbnailer-design/
 dist/
+
+# local planning/tooling, not part of the app
+_bmad/
+_bmad-output/
+.agents/
+.claude/
