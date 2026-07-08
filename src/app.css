@@ -1,0 +1,196 @@
+/* Design tokens — verbatim from DESIGN.md / HANDOFF.md. */
+:root {
+  --bg: #0b0c0f;
+  --card: #15161a;
+  --surface-2: #1f2126;
+  --border: #2a2c33;
+  --border-strong: #2e3038;
+  --text: #eef0f4;
+  --text-dim: #5b606c;
+  --accent: #9fe8b0;
+  --accent-fg: #0b120d;
+  --danger: #ff9b9b;
+  --warning: #f5c451;
+  --focus-ring: #9fe8b0;
+  --r-sm: 3px;
+  --r-md: 6px;
+  --r-full: 999px;
+}
+
+/* JetBrains Mono, single family, no exceptions — bundled locally (offline). */
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('/fonts/JetBrainsMono-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('/fonts/JetBrainsMono-Medium.ttf') format('truetype');
+  font-weight: 500;
+  font-style: normal;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('/fonts/JetBrainsMono-SemiBold.ttf') format('truetype');
+  font-weight: 600;
+  font-style: normal;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('/fonts/JetBrainsMono-Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+  overflow: hidden;
+  user-select: none;
+  cursor: default;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+button {
+  font-family: inherit;
+}
+
+button:focus-visible,
+input:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+input {
+  user-select: text;
+  cursor: text;
+}
+
+/* Shared control styles */
+.label {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.btn-ghost {
+  font-size: 12px;
+  border-radius: var(--r-sm);
+  padding: 7px 14px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+}
+.btn-ghost:hover {
+  background: var(--surface-2);
+}
+
+.btn-primary {
+  font-size: 12px;
+  border-radius: var(--r-sm);
+  padding: 7px 14px;
+  cursor: pointer;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 700;
+}
+.btn-primary:hover {
+  filter: brightness(1.06);
+}
+
+.seg-group {
+  display: inline-flex;
+  background: var(--surface-2);
+  border-radius: var(--r-sm);
+  padding: 2px;
+  gap: 2px;
+  width: fit-content;
+  flex-wrap: wrap;
+}
+.seg {
+  font-size: 12px;
+  padding: 5px 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  white-space: nowrap;
+  background: transparent;
+}
+.seg.active {
+  border-color: var(--accent);
+  background: var(--card);
+  color: var(--text);
+}
+
+.stepper {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  width: fit-content;
+}
+.stepper button {
+  background: var(--surface-2);
+  border: none;
+  color: var(--text);
+  width: 26px;
+  height: 28px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.stepper .val {
+  padding: 0 12px;
+  min-width: 56px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+@keyframes tn-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(159, 232, 176, 0.55);
+  }
+  70% {
+    box-shadow: 0 0 0 6px rgba(159, 232, 176, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(159, 232, 176, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
