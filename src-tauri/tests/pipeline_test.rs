@@ -1,5 +1,5 @@
 //! End-to-end pipeline tests on synthetic footage: animated size guarantee,
-//! orientation-aware grids, static formats, frame templates, montage-as-still,
+//! orientation-aware grids, static formats, frame templates, montage loop,
 //! robustness on truncated files, idempotent re-runs, batch engine isolation.
 
 use std::path::{Path, PathBuf};
@@ -72,19 +72,18 @@ async fn landscape_produces_all_artifacts() {
     assert!(!meta.is_portrait());
     assert_eq!(outcome.artifacts.len(), 3, "static + animated + montage");
 
-    // New naming convention (CHANGELOG §3): suffix + extension per file type
+    // Naming convention (CHANGELOG §3 + restored montage loop): montage is
+    // animated, so it follows the animated format
     let srcs = tmp.path().join("srcs");
     assert!(srcs.join("Chair Play [5587459]_contact.png").exists());
     assert!(srcs.join("Chair Play [5587459]_animated.webp").exists());
-    assert!(srcs.join("Chair Play [5587459]_montage.png").exists());
+    assert!(srcs.join("Chair Play [5587459]_montage.webp").exists());
 
-    // Animated is the size-gated artifact (≤ target on disk)
-    let anim = outcome
-        .artifacts
-        .iter()
-        .find(|a| a.kind == ArtifactKind::Animated)
-        .unwrap();
-    assert!(anim.bytes as f64 <= config.animated.target_mb * 1e6);
+    // Animated grid and montage loop are both size-gated (≤ target on disk)
+    for kind in [ArtifactKind::Animated, ArtifactKind::Montage] {
+        let a = outcome.artifacts.iter().find(|a| a.kind == kind).unwrap();
+        assert!(a.bytes as f64 <= config.animated.target_mb * 1e6);
+    }
 
     // Static sheet: 2× render, decodes
     let png = outcome
@@ -95,16 +94,18 @@ async fn landscape_produces_all_artifacts() {
     let img = image::open(&png.path).expect("static sheet decodes");
     assert!(img.width() > 800, "2× render is crisp, got {}", img.width());
 
-    // Montage: one composed frame — single tile, wider than tall for landscape
+    // Montage: an animated WebP loop (RIFF/WEBP container, multi-frame)
     let mont = outcome
         .artifacts
         .iter()
         .find(|a| a.kind == ArtifactKind::Montage)
         .unwrap();
-    let mimg = image::open(&mont.path).unwrap();
+    let mbytes = std::fs::read(&mont.path).unwrap();
+    assert_eq!(&mbytes[0..4], b"RIFF", "montage is a webp container");
+    assert_eq!(&mbytes[8..12], b"WEBP");
     assert!(
-        mimg.width() > mimg.height(),
-        "montage is a single landscape cell"
+        mbytes.windows(4).any(|w| w == b"ANIM"),
+        "montage webp is animated (ANIM chunk present)"
     );
 }
 

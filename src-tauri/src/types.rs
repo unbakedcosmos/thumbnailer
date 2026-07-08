@@ -326,17 +326,19 @@ pub enum ArtifactKind {
 
 impl ArtifactKind {
     /// Output naming convention (CHANGELOG §3): suffix + extension follow the
-    /// per-artifact file-type choices, so names never collide.
+    /// per-artifact file-type choices, so names never collide. Montage is an
+    /// animated sequential loop, so it follows the animated format.
     pub fn suffix(&self, config: &JobConfig) -> String {
         match self {
             ArtifactKind::Static => format!("_contact.{}", config.static_cfg.format.ext()),
             ArtifactKind::Animated => format!("_animated.{}", config.animated.format.ext()),
-            ArtifactKind::Montage => format!("_montage.{}", config.static_cfg.format.ext()),
+            ArtifactKind::Montage => format!("_montage.{}", config.animated.format.ext()),
         }
     }
 
     /// Every extension this artifact could have been written with — used to
-    /// clean up stale siblings when the user switches formats.
+    /// clean up stale siblings when the user switches formats. Montage lists
+    /// the legacy still extensions too so old grabs get swept.
     pub fn all_suffixes(&self) -> Vec<String> {
         match self {
             ArtifactKind::Static => ["png", "jpg", "webp"]
@@ -347,7 +349,7 @@ impl ArtifactKind {
                 .iter()
                 .map(|e| format!("_animated.{e}"))
                 .collect(),
-            ArtifactKind::Montage => ["png", "jpg", "webp"]
+            ArtifactKind::Montage => ["webp", "gif", "png", "jpg"]
                 .iter()
                 .map(|e| format!("_montage.{e}"))
                 .collect(),

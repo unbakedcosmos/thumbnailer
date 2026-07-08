@@ -15,9 +15,11 @@ use tokio_util::sync::CancellationToken;
 
 const ANIM_FPS: f64 = 12.0;
 const ANIM_FRAMES: usize = 30; // 2.5 s — the proven ceiling (PRD FR13)
+const MONTAGE_SEGMENTS: usize = 6;
+const MONTAGE_SEG_FRAMES: usize = 14; // ~1.2 s per segment @ 12 fps
 const STATIC_TIMEOUT: Duration = Duration::from_secs(180);
 const ANIM_TIMEOUT: Duration = Duration::from_secs(420);
-const MONTAGE_TIMEOUT: Duration = Duration::from_secs(90);
+const MONTAGE_TIMEOUT: Duration = Duration::from_secs(180);
 
 pub struct GenControl {
     pub cancel: CancellationToken,
@@ -492,29 +494,113 @@ async fn compose_still_sheet(
 
 async fn generate_still(
     inp: &JobInput<'_>,
-    kind: ArtifactKind, // Static (N×M) or Montage (1×1)
     ctl: &GenControl,
     p0: f32,
     span: f32,
 ) -> Result<ProducedArtifact, Failure> {
     let cfg = inp.config;
-    let grid = if kind == ArtifactKind::Montage {
-        GridDims { cols: 1, rows: 1 }
-    } else {
-        cfg.grid
-    };
-    let img = compose_still_sheet(inp, grid, ctl, p0, span).await?;
+    let img = compose_still_sheet(inp, cfg.grid, ctl, p0, span).await?;
     let bytes = encode_static(&img, cfg.static_cfg.format, cfg.static_cfg.quality)?;
-    let dest = artifact_path(inp.source, cfg, kind);
+    let dest = artifact_path(inp.source, cfg, ArtifactKind::Static);
     atomic_write(&dest, &bytes)?;
-    remove_stale_siblings(inp.source, cfg, kind, &dest);
+    remove_stale_siblings(inp.source, cfg, ArtifactKind::Static, &dest);
     ctl.report(p0 + span);
     Ok(ProducedArtifact {
-        kind,
+        kind: ArtifactKind::Static,
         path: dest.to_string_lossy().into(),
         bytes: bytes.len() as u64,
         degraded: false,
     })
+}
+
+/// Single-cell montage (PRD FR14, restored per user decision): one cell
+/// playing sequential clips back to back — an animated loop, bare frames,
+/// size-governed like the animated grid and sharing its format/target.
+async fn generate_montage(
+    inp: &JobInput<'_>,
+    ctl: &GenControl,
+    p0: f32,
+    span: f32,
+) -> Result<ProducedArtifact, Failure> {
+    let cfg = inp.config;
+    let meta = inp.meta;
+    let anim = &cfg.animated;
+    let target = (anim.target_mb * 1_000_000.0) as u64;
+    let aspect = tile_aspect(cfg.orientation, meta);
+    let long = 420.0 + 2.4 * anim.quality as f64;
+    let (w, h) = if aspect >= 1.0 {
+        (long as u32, (long / aspect) as u32)
+    } else {
+        ((long * aspect) as u32, long as u32)
+    };
+    let (w, h) = ((w & !1).max(2), (h & !1).max(2));
+
+    let seg_len = MONTAGE_SEG_FRAMES as f64 / ANIM_FPS;
+    let times: Vec<f64> = sample_times(meta.duration_s, MONTAGE_SEGMENTS as u32)
+        .into_iter()
+        .map(|t| t.min((meta.duration_s - seg_len - 0.1).max(0.0)))
+        .collect();
+
+    let mut all_frames: Vec<RgbImage> = Vec::new();
+    for (i, &t) in times.iter().enumerate() {
+        ctl.check()?;
+        let frames =
+            extract_clip(inp.source, t, ANIM_FPS, MONTAGE_SEG_FRAMES, w, h, meta.hdr).await?;
+        all_frames.extend(frames);
+        ctl.report(p0 + span * 0.6 * (i + 1) as f32 / times.len() as f32);
+    }
+
+    let dest = artifact_path(inp.source, cfg, ArtifactKind::Montage);
+    let base_q = (55.0 + 0.4 * anim.quality as f32).min(92.0);
+    let q3 = (base_q - 28.0).max(38.0);
+    // quality → fps → resolution, same governed order as the grid
+    let mut attempts: Vec<(f32, usize, f64)> = vec![
+        (base_q, 1, 1.0),
+        ((base_q - 14.0).max(38.0), 1, 1.0),
+        (q3, 1, 1.0),
+        (q3, 2, 1.0), // half fps
+        (q3, 2, 0.8),
+        (q3, 2, 0.65),
+    ];
+    if anim.format == AnimatedFormat::Gif {
+        attempts.remove(2);
+        attempts.remove(1);
+    }
+    for (i, (q, stride, sc)) in attempts.iter().enumerate() {
+        ctl.check()?;
+        let (sw, sh) = (
+            (((w as f64 * sc) as u32) & !1).max(2),
+            (((h as f64 * sc) as u32) & !1).max(2),
+        );
+        let fps_out = ANIM_FPS / *stride as f64;
+        let mut enc = AnimEncoder::new(anim.format, sw, sh, *q, fps_out)?;
+        for fr in all_frames.iter().step_by(*stride) {
+            ctl.check()?;
+            if *sc < 1.0 {
+                let scaled =
+                    image::imageops::resize(fr, sw, sh, image::imageops::FilterType::Triangle);
+                enc.add_frame(&scaled)?;
+            } else {
+                enc.add_frame(fr)?;
+            }
+        }
+        let data = enc.finish()?;
+        if data.len() as u64 <= target {
+            atomic_write(&dest, &data)?;
+            remove_stale_siblings(inp.source, cfg, ArtifactKind::Montage, &dest);
+            ctl.report(p0 + span);
+            return Ok(ProducedArtifact {
+                kind: ArtifactKind::Montage,
+                path: dest.to_string_lossy().into(),
+                bytes: data.len() as u64,
+                degraded: i > 0,
+            });
+        }
+    }
+    Err(Failure::QualityFloor(format!(
+        "montage ≥ {:.1} MB at floor",
+        anim.target_mb
+    )))
 }
 
 async fn generate_animated(
@@ -661,7 +747,7 @@ pub async fn run_job(
     let weight_of = |k: &ArtifactKind| match k {
         ArtifactKind::Static => 1.0f32,
         ArtifactKind::Animated => 3.0,
-        ArtifactKind::Montage => 0.5,
+        ArtifactKind::Montage => 1.5,
     };
     let weights: f32 = wanted.iter().map(weight_of).sum();
 
@@ -670,13 +756,10 @@ pub async fn run_job(
     for kind in wanted {
         let w = weight_of(&kind) / weights * 0.95;
         let (fut, budget): (ArtifactFut<'_>, Duration) = match kind {
-            ArtifactKind::Static => (
-                Box::pin(generate_still(&inp, ArtifactKind::Static, ctl, p0, w)),
-                STATIC_TIMEOUT,
-            ),
+            ArtifactKind::Static => (Box::pin(generate_still(&inp, ctl, p0, w)), STATIC_TIMEOUT),
             ArtifactKind::Animated => (Box::pin(generate_animated(&inp, ctl, p0, w)), ANIM_TIMEOUT),
             ArtifactKind::Montage => (
-                Box::pin(generate_still(&inp, ArtifactKind::Montage, ctl, p0, w)),
+                Box::pin(generate_montage(&inp, ctl, p0, w)),
                 MONTAGE_TIMEOUT,
             ),
         };

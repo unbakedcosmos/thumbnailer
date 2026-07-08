@@ -25,10 +25,11 @@
   const showGrid = $derived(
     job ? job.config.artifacts.staticSheet || job.config.artifacts.animated : false
   );
-  const showStaticPanel = $derived(
-    job ? job.config.artifacts.staticSheet || job.config.artifacts.montage : false
+  const showStaticPanel = $derived(job ? job.config.artifacts.staticSheet : false);
+  // Montage is an animated sequential loop — it shares the animated knobs
+  const showAnimatedPanel = $derived(
+    job ? job.config.artifacts.animated || job.config.artifacts.montage : false
   );
-  const showAnimatedPanel = $derived(job ? job.config.artifacts.animated : false);
 
   const animEst = $derived(job ? estimateAnimatedMB(job) : 0);
   const overTarget = $derived(job ? animEst > job.config.animated.targetMb : false);
@@ -242,7 +243,7 @@
 
     {#if showStaticPanel}
       <div class="panel">
-        <span class="label mint">Static &amp; montage image</span>
+        <span class="label mint">Static image</span>
         <div class="panel-grid">
           <div class="field">
             <span class="label">File type</span>
@@ -417,7 +418,7 @@
     </div>
 
     {#if showStaticPanel}
-      <div class="preview-head"><span class="label">Static / montage preview</span></div>
+      <div class="preview-head"><span class="label">Static sheet preview</span></div>
       <div
         class="preview"
         style:border={frameOn && tpl
@@ -463,7 +464,13 @@
     {/if}
 
     {#if showAnimatedPanel}
-      <div class="preview-head"><span class="label">Animated preview loop</span></div>
+      <div class="preview-head">
+        <span class="label"
+          >{job.config.artifacts.montage && !job.config.artifacts.animated
+            ? 'Montage loop'
+            : 'Animated preview loop'}</span
+        >
+      </div>
       <div class="preview loop-well">
         <div class="loop">▶</div>
       </div>

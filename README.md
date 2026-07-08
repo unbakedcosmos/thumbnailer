@@ -12,15 +12,15 @@ becomes a queue row. Grid (3×9 default) and orientation (Auto reads each source
 aspect and fits without cropping) are shared; beyond that the two outputs have
 their own panels:
 
-- **Static & montage image** — file type (PNG / JPEG / WebP), compression quality
+- **Static image** — file type (PNG / JPEG / WebP), compression quality
   (hidden for lossless PNG), post-process **sharpen**, and a **frame**: sheet
   templates (Classic / Minimal / Bold built-ins + your own) controlling the header
   band, border weight, per-tile timestamp style (corner / overlay chips) and
   accent. Frame off = raw grab. Not size-gated.
-- **Animated preview** — file type (WebP / GIF), quality, and the **target size**
-  stepper (default 8 MB — a hard ceiling, not a wish). Bounded auto-fit degrades
-  quality → fps → loop length → resolution; below the floor the file is reported
-  as can't-fit, never written oversize.
+- **Animated preview & montage** — file type (WebP / GIF), quality, and the
+  **target size** stepper (default 8 MB — a hard ceiling, not a wish). Bounded
+  auto-fit degrades quality → fps → loop length → resolution; below the floor the
+  file is reported as can't-fit, never written oversize.
 
 **Start batch** processes the whole queue unattended with encode-aware concurrency;
 per-file failures are typed and isolated. The queue rail filters All / Issues and
@@ -31,7 +31,7 @@ file-type choices):
 
 - `<basename>_contact.{png|jpg|webp}` — static sheet (2× render)
 - `<basename>_animated.{webp|gif}` — animated grid, every tile a 2.5 s / 12 fps loop
-- `<basename>_montage.{png|jpg|webp}` — one composed frame (single-cell still)
+- `<basename>_montage.{webp|gif}` — single-cell loop of ~6 sequential clips
 
 Templates are user data in `templates.json` next to the app settings — they persist
 across sessions and batches. Close or crash mid-batch and the manifest restores
@@ -84,9 +84,9 @@ from DESIGN.md, real progress from Rust events.
 - **Pause** stops dequeuing new files; in-flight encodes finish (an ffmpeg encode
   can't be frozen without losing its work). Stop cancels in-flight and resets
   running rows to queued.
-- **Montage** ("one composed frame", handoff r2 §1.2) is implemented as a 1×1
-  sheet: one representative frame at the video midpoint, carrying the same
-  format/sharpen/frame controls as the static sheet.
+- **Montage** is the original PRD FR14 artifact (user decision overriding the
+  ambiguous r2 wording): a single cell playing ~6 sequential clips back to back,
+  animated, bare frames, sharing the animated panel's format/quality/target.
 - **Quality-floor misses surface as `skipped`** (warning) per the prototype's
   behavior; hard errors (unreadable/decode/timeout/disk-full) are `failed`.
 - The **animated grid keeps its frame chrome** regardless of the frame toggle —

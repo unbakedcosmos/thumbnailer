@@ -244,18 +244,23 @@ export function jobIsPortrait(job) {
 }
 
 /// Animated estimate (mint mono-num readout) — an estimate, not the encode.
+/// Covers the grid when Animated is on, plus the single-cell montage loop.
 export function estimateAnimatedMB(job) {
   const c = job.config;
-  const tiles = c.grid.cols * c.grid.rows;
   const q = c.animated.quality / 100;
-  const base = Math.max(0.8, q * 9.5) * (tiles / 27);
-  return c.animated.format === 'gif' ? base * 1.8 : base;
+  let base = 0;
+  if (c.artifacts.animated) {
+    const tiles = c.grid.cols * c.grid.rows;
+    base += Math.max(0.8, q * 9.5) * (tiles / 27);
+  }
+  if (c.artifacts.montage) base += 0.3 + q * 0.9;
+  return (c.animated.format === 'gif' ? 1.8 : 1) * Math.max(0.2, base);
 }
 
-/// Static / montage estimate (per prototype: tiles × factor, PNG fixed).
+/// Static sheet estimate (per prototype: tiles × factor, PNG fixed).
 export function estimateStaticMB(job) {
   const c = job.config;
-  const effTiles = c.artifacts.staticSheet ? c.grid.cols * c.grid.rows : 1;
+  const effTiles = c.grid.cols * c.grid.rows;
   const isPng = c.static.format === 'png';
   const factor = isPng ? 1 : 0.15 + (c.static.quality / 100) * 0.8;
   return Math.max(0.3, effTiles * 0.14 * factor);
@@ -268,7 +273,7 @@ export function outputFilesNote(job) {
   const parts = [];
   if (c.artifacts.staticSheet) parts.push('_contact.' + EXT[c.static.format]);
   if (c.artifacts.animated) parts.push('_animated.' + EXT[c.animated.format]);
-  if (c.artifacts.montage) parts.push('_montage.' + EXT[c.static.format]);
+  if (c.artifacts.montage) parts.push('_montage.' + EXT[c.animated.format]);
   return parts.length ? parts.join(' · ') : 'no artifacts selected';
 }
 
