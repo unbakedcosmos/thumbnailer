@@ -24,7 +24,14 @@
   onkeydown={(e) => e.key === 'Escape' && close()}
   role="presentation"
 >
-  <div class="panel" onclick={(e) => e.stopPropagation()} role="dialog" aria-label="Settings" tabindex="-1" onkeydown={() => {}}>
+  <div
+    class="panel"
+    onclick={(e) => e.stopPropagation()}
+    role="dialog"
+    aria-label="Settings"
+    tabindex="-1"
+    onkeydown={() => {}}
+  >
     <div class="head">
       <span class="title">Settings</span>
       <button class="x" onclick={close} aria-label="Close settings">✕</button>
@@ -49,8 +56,12 @@
           <div class="help">used for newly added files</div>
         </div>
         <div class="seg-group">
-          {#each Object.keys(PRESETS) as p}
-            <button class="seg" class:active={app.settings.preset === p} onclick={() => setPreset(p)}>{p}</button>
+          {#each Object.keys(PRESETS) as p (p)}
+            <button
+              class="seg"
+              class:active={app.settings.preset === p}
+              onclick={() => setPreset(p)}>{p}</button
+            >
           {/each}
         </div>
       </div>
@@ -61,7 +72,9 @@
           <div class="help">re-generate replaces prior artifacts</div>
         </div>
         <button class="chip" class:on={app.settings.overwrite} onclick={toggleOverwrite}>
-          <span class="sq" class:on={app.settings.overwrite}></span>{app.settings.overwrite ? 'On' : 'Off'}
+          <span class="sq" class:on={app.settings.overwrite}></span>{app.settings.overwrite
+            ? 'On'
+            : 'Off'}
         </button>
       </div>
 

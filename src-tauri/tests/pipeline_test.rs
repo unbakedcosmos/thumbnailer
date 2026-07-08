@@ -15,9 +15,17 @@ fn make_video(dir: &Path, name: &str, w: u32, h: u32, dur: f64) -> PathBuf {
     let path = dir.join(name);
     let status = Command::new("ffmpeg")
         .args([
-            "-y", "-f", "lavfi", "-i",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
             &format!("testsrc2=size={w}x{h}:rate=30:duration={dur}"),
-            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
         ])
         .arg(&path)
         .output()
@@ -29,7 +37,11 @@ fn make_video(dir: &Path, name: &str, w: u32, h: u32, dur: f64) -> PathBuf {
 fn test_config(grid: GridDims) -> JobConfig {
     JobConfig {
         grid,
-        artifacts: ArtifactSet { static_sheet: true, animated: true, montage: true },
+        artifacts: ArtifactSet {
+            static_sheet: true,
+            animated: true,
+            montage: true,
+        },
         ..Default::default()
     }
 }
@@ -63,7 +75,9 @@ async fn landscape_produces_all_artifacts_under_target() {
     let fonts = Fonts::load();
     let config = test_config(GridDims { cols: 3, rows: 3 });
 
-    let (meta, outcome) = run_job(&video, &config, &fonts, &ctl()).await.expect("job succeeds");
+    let (meta, outcome) = run_job(&video, &config, &fonts, &ctl())
+        .await
+        .expect("job succeeds");
     assert_eq!(meta.width, 1280);
     assert!(!meta.is_portrait());
     assert_eq!(outcome.artifacts.len(), 3, "static + animated + montage");
@@ -71,13 +85,19 @@ async fn landscape_produces_all_artifacts_under_target() {
 
     // Artifacts land in srcs/ next to the source, named by convention (FR23)
     let srcs = tmp.path().join("srcs");
-    assert!(srcs.join("Chair Play [5587459]_contact.png").exists()
-        || srcs.join("Chair Play [5587459]_contact.jpg").exists());
+    assert!(
+        srcs.join("Chair Play [5587459]_contact.png").exists()
+            || srcs.join("Chair Play [5587459]_contact.jpg").exists()
+    );
     assert!(srcs.join("Chair Play [5587459]_contact.webp").exists());
     assert!(srcs.join("Chair Play [5587459]_loop.webp").exists());
 
     // Static sheet: landscape tiles → sheet wider than tall for a 3×3 grid
-    let png = outcome.artifacts.iter().find(|a| a.kind == ArtifactKind::Static).unwrap();
+    let png = outcome
+        .artifacts
+        .iter()
+        .find(|a| a.kind == ArtifactKind::Static)
+        .unwrap();
     let img = image::open(&png.path).expect("static sheet decodes");
     assert!(img.width() > 800, "2× render is crisp, got {}", img.width());
 }
@@ -88,9 +108,15 @@ async fn portrait_gets_orientation_aware_tiles() {
     let video = make_video(tmp.path(), "Backstage Vert [5588204].mp4", 720, 1280, 10.0);
     let fonts = Fonts::load();
     let mut config = test_config(GridDims { cols: 3, rows: 3 });
-    config.artifacts = ArtifactSet { static_sheet: true, animated: false, montage: false };
+    config.artifacts = ArtifactSet {
+        static_sheet: true,
+        animated: false,
+        montage: false,
+    };
 
-    let (meta, outcome) = run_job(&video, &config, &fonts, &ctl()).await.expect("job succeeds");
+    let (meta, outcome) = run_job(&video, &config, &fonts, &ctl())
+        .await
+        .expect("job succeeds");
     assert!(meta.is_portrait());
     assert_under_target(&outcome, config.target_mb);
 
@@ -115,13 +141,18 @@ async fn truncated_file_fails_as_unreadable() {
 
     let fonts = Fonts::load();
     let config = test_config(GridDims { cols: 2, rows: 2 });
-    let err = run_job(&video, &config, &fonts, &ctl()).await.expect_err("must fail");
+    let err = run_job(&video, &config, &fonts, &ctl())
+        .await
+        .expect_err("must fail");
     assert!(
         matches!(err, Failure::Unreadable(_)),
         "typed reason is unreadable (FR5), got: {err:?}"
     );
     // And nothing was silently written (FR16 counter-metric)
-    assert!(!tmp.path().join("srcs").exists() || std::fs::read_dir(tmp.path().join("srcs")).unwrap().count() == 0);
+    assert!(
+        !tmp.path().join("srcs").exists()
+            || std::fs::read_dir(tmp.path().join("srcs")).unwrap().count() == 0
+    );
 }
 
 #[tokio::test]
@@ -130,7 +161,11 @@ async fn rerun_is_idempotent_until_overwrite() {
     let video = make_video(tmp.path(), "Quick Clip [5589801].mp4", 640, 360, 6.0);
     let fonts = Fonts::load();
     let mut config = test_config(GridDims { cols: 2, rows: 2 });
-    config.artifacts = ArtifactSet { static_sheet: true, animated: false, montage: false };
+    config.artifacts = ArtifactSet {
+        static_sheet: true,
+        animated: false,
+        montage: false,
+    };
 
     let (_, first) = run_job(&video, &config, &fonts, &ctl()).await.unwrap();
     assert_eq!(first.artifacts.len(), 1);
@@ -141,7 +176,10 @@ async fn rerun_is_idempotent_until_overwrite() {
     let (_, second) = run_job(&video, &config, &fonts, &ctl()).await.unwrap();
     assert!(second.artifacts.is_empty());
     assert_eq!(second.skipped_existing, vec![ArtifactKind::Static]);
-    assert_eq!(std::fs::metadata(&produced).unwrap().modified().unwrap(), mtime1);
+    assert_eq!(
+        std::fs::metadata(&produced).unwrap().modified().unwrap(),
+        mtime1
+    );
 
     // With overwrite: regenerated
     let ctl_ow = GenControl {
@@ -203,7 +241,11 @@ async fn batch_engine_isolates_failures_and_completes() {
     // Give every job a fast config
     let cfg = JobConfig {
         grid: GridDims { cols: 2, rows: 2 },
-        artifacts: ArtifactSet { static_sheet: true, animated: false, montage: false },
+        artifacts: ArtifactSet {
+            static_sheet: true,
+            animated: false,
+            montage: false,
+        },
         ..Default::default()
     };
     engine.apply_config_all(cfg);

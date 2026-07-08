@@ -1,12 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import {
-    app,
-    init,
-    generateSelected,
-    startBatch,
-    pauseBatch
-  } from '$lib/state.svelte.js';
+  import { app, init, generateSelected, startBatch, pauseBatch } from '$lib/state.svelte.js';
   import Header from '$lib/Header.svelte';
   import QueueRail from '$lib/QueueRail.svelte';
   import Editor from '$lib/Editor.svelte';
@@ -26,7 +20,8 @@
       e.preventDefault();
       if (!app.jobs.length) return;
       const i = app.jobs.findIndex((j) => j.id === app.selectedId);
-      const next = e.key === 'ArrowDown' ? Math.min(app.jobs.length - 1, i + 1) : Math.max(0, i - 1);
+      const next =
+        e.key === 'ArrowDown' ? Math.min(app.jobs.length - 1, i + 1) : Math.max(0, i - 1);
       app.selectedId = app.jobs[next < 0 ? 0 : next].id;
     } else if (e.key === 'Enter') {
       if (e.target?.tagName === 'BUTTON') return;

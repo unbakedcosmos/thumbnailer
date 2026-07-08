@@ -16,7 +16,8 @@ use tokio_util::sync::CancellationToken;
 pub type Emitter = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
 
 pub const VIDEO_EXTENSIONS: [&str; 14] = [
-    "mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "flv", "ts", "m2ts", "mpg", "mpeg", "mts", "3gp",
+    "mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "flv", "ts", "m2ts", "mpg", "mpeg", "mts",
+    "3gp",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,9 +30,10 @@ pub enum JobStatus {
     Skipped,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum BatchStatus {
+    #[default]
     Idle,
     Ready,
     Running,
@@ -77,7 +79,9 @@ impl Default for Settings {
     fn default() -> Self {
         // Encode-aware default (FR4): ffmpeg encodes are CPU/RAM bound — low N,
         // never the downloader-style I/O fan-out.
-        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
         Settings {
             concurrency: (cores / 2).clamp(1, 4),
             preset: "Balanced".into(),
@@ -92,12 +96,6 @@ struct EngineState {
     batch: BatchStatus,
     cancels: HashMap<u64, CancellationToken>,
     scheduler_alive: bool,
-}
-
-impl Default for BatchStatus {
-    fn default() -> Self {
-        BatchStatus::Idle
-    }
 }
 
 pub struct Engine {
@@ -161,15 +159,34 @@ impl Engine {
         BatchView {
             status: st.batch,
             total: st.jobs.len(),
-            done: st.jobs.iter().filter(|j| j.status == JobStatus::Done).count(),
-            failed: st.jobs.iter().filter(|j| j.status == JobStatus::Failed).count(),
-            skipped: st.jobs.iter().filter(|j| j.status == JobStatus::Skipped).count(),
-            running: st.jobs.iter().filter(|j| j.status == JobStatus::Running).count(),
+            done: st
+                .jobs
+                .iter()
+                .filter(|j| j.status == JobStatus::Done)
+                .count(),
+            failed: st
+                .jobs
+                .iter()
+                .filter(|j| j.status == JobStatus::Failed)
+                .count(),
+            skipped: st
+                .jobs
+                .iter()
+                .filter(|j| j.status == JobStatus::Skipped)
+                .count(),
+            running: st
+                .jobs
+                .iter()
+                .filter(|j| j.status == JobStatus::Running)
+                .count(),
         }
     }
 
     fn emit_batch(&self, st: &EngineState) {
-        (self.emitter)("batch-update", serde_json::to_value(Self::batch_view(st)).unwrap());
+        (self.emitter)(
+            "batch-update",
+            serde_json::to_value(Self::batch_view(st)).unwrap(),
+        );
     }
 
     fn emit_queue(&self, st: &EngineState) {
@@ -180,7 +197,11 @@ impl Engine {
 
     fn save_manifest(&self) {
         let st = self.state.lock().unwrap();
-        let m = Manifest { version: 1, batch: st.batch, jobs: st.jobs.clone() };
+        let m = Manifest {
+            version: 1,
+            batch: st.batch,
+            jobs: st.jobs.clone(),
+        };
         drop(st);
         if let Ok(b) = serde_json::to_vec(&m) {
             let tmp = self.manifest_path().with_extension("tmp");
@@ -210,7 +231,11 @@ impl Engine {
         }
         self.next_id.store(max_id + 1, Ordering::SeqCst);
         let pending = st.jobs.iter().any(|j| j.status == JobStatus::Queued);
-        st.batch = if pending { BatchStatus::Paused } else { BatchStatus::Complete };
+        st.batch = if pending {
+            BatchStatus::Paused
+        } else {
+            BatchStatus::Complete
+        };
         let view = Self::batch_view(&st);
         self.emit_queue(&st);
         self.emit_batch(&st);
@@ -244,7 +269,11 @@ impl Engine {
                 let id = self.next_id.fetch_add(1, Ordering::SeqCst);
                 st.jobs.push(Job {
                     id,
-                    name: f.file_name().and_then(|s| s.to_str()).unwrap_or("video").to_string(),
+                    name: f
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("video")
+                        .to_string(),
                     path: f,
                     status: JobStatus::Queued,
                     pct: 0.0,
@@ -385,7 +414,9 @@ impl Engine {
     pub fn generate_one(self: &Arc<Self>, id: u64, config: Option<JobConfig>) {
         {
             let mut st = self.state.lock().unwrap();
-            let Some(j) = st.jobs.iter_mut().find(|j| j.id == id) else { return };
+            let Some(j) = st.jobs.iter_mut().find(|j| j.id == id) else {
+                return;
+            };
             if j.status == JobStatus::Running {
                 return;
             }
@@ -423,7 +454,11 @@ impl Engine {
                         break;
                     }
                     let cap = me.settings.lock().unwrap().concurrency.max(1);
-                    let running = st.jobs.iter().filter(|j| j.status == JobStatus::Running).count();
+                    let running = st
+                        .jobs
+                        .iter()
+                        .filter(|j| j.status == JobStatus::Running)
+                        .count();
                     if running >= cap {
                         None
                     } else {
@@ -449,7 +484,11 @@ impl Engine {
                     // between our find and this lock.
                     let claimed = {
                         let mut st = me.state.lock().unwrap();
-                        match st.jobs.iter_mut().find(|j| j.id == id && j.status == JobStatus::Queued) {
+                        match st
+                            .jobs
+                            .iter_mut()
+                            .find(|j| j.id == id && j.status == JobStatus::Queued)
+                        {
                             Some(j) => {
                                 j.status = JobStatus::Running;
                                 j.pct = 0.0;
@@ -474,7 +513,10 @@ impl Engine {
     async fn run_one(self: &Arc<Self>, id: u64, overwrite: bool) {
         {
             let mut st = self.state.lock().unwrap();
-            let Some(j) = st.jobs.iter_mut().find(|j| j.id == id && j.status == JobStatus::Queued)
+            let Some(j) = st
+                .jobs
+                .iter_mut()
+                .find(|j| j.id == id && j.status == JobStatus::Queued)
             else {
                 return;
             };
@@ -492,7 +534,9 @@ impl Engine {
     async fn run_marked(self: &Arc<Self>, id: u64, overwrite: bool) {
         let (path, config) = {
             let st = self.state.lock().unwrap();
-            let Some(j) = st.jobs.iter().find(|j| j.id == id) else { return };
+            let Some(j) = st.jobs.iter().find(|j| j.id == id) else {
+                return;
+            };
             (j.path.clone(), j.config.clone())
         };
 
@@ -513,7 +557,11 @@ impl Engine {
             }
         });
 
-        let ctl = GenControl { cancel: token.clone(), overwrite, progress };
+        let ctl = GenControl {
+            cancel: token.clone(),
+            overwrite,
+            progress,
+        };
         let result = run_job(&path, &config, &self.fonts, &ctl).await;
 
         let mut st = self.state.lock().unwrap();
@@ -577,7 +625,9 @@ fn walk_videos(dir: &Path, out: &mut Vec<PathBuf>, depth: u32) {
     if depth > 12 {
         return;
     }
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in rd.flatten() {
         let p = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();

@@ -24,11 +24,19 @@
           class="danger"
         >
           · {app.batch.failed} failed</span
-        >{/if}{#if app.batch.skipped > 0}<span class="warning"> · {app.batch.skipped} skipped</span>{/if}
+        >{/if}{#if app.batch.skipped > 0}<span class="warning">
+          · {app.batch.skipped} skipped</span
+        >{/if}
     </span>
   {/if}
 
-  <div class="bar" role="progressbar" aria-valuenow={Math.round(pct)} aria-valuemin="0" aria-valuemax="100">
+  <div
+    class="bar"
+    role="progressbar"
+    aria-valuenow={Math.round(pct)}
+    aria-valuemin="0"
+    aria-valuemax="100"
+  >
     <i style:width="{pct}%"></i>
   </div>
 
@@ -42,7 +50,12 @@
     <button class="btn-ghost" onclick={stopBatch}>Stop</button>
   {/if}
 
-  <button class="gear" title="Settings" aria-label="Settings" onclick={() => (app.settingsOpen = true)}>⚙</button>
+  <button
+    class="gear"
+    title="Settings"
+    aria-label="Settings"
+    onclick={() => (app.settingsOpen = true)}>⚙</button
+  >
 </header>
 
 <style>

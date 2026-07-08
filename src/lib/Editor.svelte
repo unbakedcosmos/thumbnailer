@@ -1,6 +1,5 @@
 <script>
   import {
-    app,
     GRID_PRESETS,
     selectedJob,
     syncJobConfig,
@@ -20,7 +19,9 @@
   const overTarget = $derived(job ? est > job.config.targetMb : false);
 
   const gridIsPreset = $derived(
-    job ? GRID_PRESETS.some((g) => g.cols === job.config.grid.cols && g.rows === job.config.grid.rows) : true
+    job
+      ? GRID_PRESETS.some((g) => g.cols === job.config.grid.cols && g.rows === job.config.grid.rows)
+      : true
   );
   let customGrid = $state(false);
   $effect(() => {
@@ -75,7 +76,10 @@
   let dragging = $state(false);
   function qualityFromEvent(e) {
     const rect = trackEl.getBoundingClientRect();
-    const pct = Math.max(0, Math.min(100, Math.round(((e.clientX - rect.left) / rect.width) * 100)));
+    const pct = Math.max(
+      0,
+      Math.min(100, Math.round(((e.clientX - rect.left) / rect.width) * 100))
+    );
     job.config.quality = pct;
   }
   function onTrackDown(e) {
@@ -95,7 +99,10 @@
   function onTrackKey(e) {
     if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
       e.preventDefault();
-      job.config.quality = Math.max(0, Math.min(100, job.config.quality + (e.key === 'ArrowRight' ? 2 : -2)));
+      job.config.quality = Math.max(
+        0,
+        Math.min(100, job.config.quality + (e.key === 'ArrowRight' ? 2 : -2))
+      );
       syncJobConfig(job);
     }
   }
@@ -132,10 +139,12 @@
       <div class="field">
         <span class="label">Grid</span>
         <div class="seg-group" role="radiogroup" aria-label="Grid dimensions">
-          {#each GRID_PRESETS as g}
+          {#each GRID_PRESETS as g (g.label)}
             <button
               class="seg"
-              class:active={!showCustom && job.config.grid.cols === g.cols && job.config.grid.rows === g.rows}
+              class:active={!showCustom &&
+                job.config.grid.cols === g.cols &&
+                job.config.grid.rows === g.rows}
               onclick={() => setGrid(g)}>{g.label}</button
             >
           {/each}
@@ -161,9 +170,11 @@
       <div class="field">
         <span class="label">Orientation</span>
         <div class="seg-group" role="radiogroup" aria-label="Orientation">
-          {#each ['auto', 'portrait', 'landscape'] as o}
-            <button class="seg" class:active={job.config.orientation === o} onclick={() => setOrientation(o)}
-              >{o[0].toUpperCase() + o.slice(1)}</button
+          {#each ['auto', 'portrait', 'landscape'] as o (o)}
+            <button
+              class="seg"
+              class:active={job.config.orientation === o}
+              onclick={() => setOrientation(o)}>{o[0].toUpperCase() + o.slice(1)}</button
             >
           {/each}
         </div>
@@ -205,8 +216,12 @@
       <div class="field">
         <span class="label">Artifacts</span>
         <div class="chips">
-          {#each artifactDefs as a}
-            <button class="chip" class:on={job.config.artifacts[a.key]} onclick={() => toggleArtifact(a.key)}>
+          {#each artifactDefs as a (a.key)}
+            <button
+              class="chip"
+              class:on={job.config.artifacts[a.key]}
+              onclick={() => toggleArtifact(a.key)}
+            >
               <span class="sq" class:on={job.config.artifacts[a.key]}></span>{a.label}
             </button>
           {/each}
@@ -216,11 +231,15 @@
       <div class="field span2">
         <span class="label">Output folder</span>
         <div class="seg-group">
-          <button class="seg" class:active={job.config.outputMode === 'source'} onclick={() => setOutputMode('source')}
-            >Same as source</button
+          <button
+            class="seg"
+            class:active={job.config.outputMode === 'source'}
+            onclick={() => setOutputMode('source')}>Same as source</button
           >
-          <button class="seg" class:active={job.config.outputMode === 'custom'} onclick={() => setOutputMode('custom')}
-            >Custom folder</button
+          <button
+            class="seg"
+            class:active={job.config.outputMode === 'custom'}
+            onclick={() => setOutputMode('custom')}>Custom folder</button
           >
         </div>
         {#if job.config.outputMode === 'custom'}
@@ -262,19 +281,23 @@
 
     <div class="preview">
       <div class="pgrid" style:grid-template-columns="repeat({previewCols}, 1fr)">
-        {#each Array(previewShown) as _, i (i)}
+        {#each Array(previewShown), i (i)}
           <div class="tile" style:aspect-ratio={isPortrait ? '9/16' : '16/9'}></div>
         {/each}
       </div>
     </div>
     <div class="caption">
-      <span class="dim">preview · {previewShown} of {previewTotal} tiles shown · not final encode</span>
-      <span class="est" class:danger={overTarget}>{est.toFixed(1)} MB est. · target {job.config.targetMb} MB</span>
+      <span class="dim"
+        >preview · {previewShown} of {previewTotal} tiles shown · not final encode</span
+      >
+      <span class="est" class:danger={overTarget}
+        >{est.toFixed(1)} MB est. · target {job.config.targetMb} MB</span
+      >
     </div>
 
     {#if job.status === 'done' && job.artifacts?.length}
       <div class="artifacts">
-        {#each job.artifacts as a}
+        {#each job.artifacts as a (a.path)}
           <span class="art"
             >{a.path.split(/[\\/]/).pop()} · <b class="mint">{fmtMB(a.bytes)}</b>{#if a.degraded}
               <span class="warning"> · reduced quality</span>{/if}</span

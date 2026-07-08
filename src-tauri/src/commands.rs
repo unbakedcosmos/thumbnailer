@@ -66,7 +66,11 @@ pub async fn clear_queue(engine: Eng<'_>) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn generate_one(engine: Eng<'_>, id: u64, config: Option<JobConfig>) -> Result<(), String> {
+pub async fn generate_one(
+    engine: Eng<'_>,
+    id: u64,
+    config: Option<JobConfig>,
+) -> Result<(), String> {
     engine.inner().generate_one(id, config);
     Ok(())
 }

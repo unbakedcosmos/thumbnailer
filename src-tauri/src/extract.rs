@@ -53,7 +53,12 @@ fn classify(stderr: &str) -> Failure {
         Failure::Unreadable("truncated".into())
     } else if s.contains("decoder") && s.contains("not found") {
         Failure::UnsupportedCodec(
-            stderr.lines().next().unwrap_or("decoder not found").trim().to_string(),
+            stderr
+                .lines()
+                .next()
+                .unwrap_or("decoder not found")
+                .trim()
+                .to_string(),
         )
     } else if s.contains("no space left") {
         Failure::DiskFull("while decoding".into())
@@ -70,7 +75,12 @@ fn classify(stderr: &str) -> Failure {
 
 /// Run ffmpeg, streaming exactly-sized RGB24 frames from stdout.
 /// Returns as many complete frames as the file yielded.
-async fn run_rawvideo(args: Vec<std::ffi::OsString>, w: u32, h: u32, max_frames: usize) -> Result<Vec<RgbImage>, Failure> {
+async fn run_rawvideo(
+    args: Vec<std::ffi::OsString>,
+    w: u32,
+    h: u32,
+    max_frames: usize,
+) -> Result<Vec<RgbImage>, Failure> {
     let mut child = base_command(ffmpeg_path())
         .args(["-hide_banner", "-loglevel", "error", "-nostdin"])
         .args(args)
@@ -107,7 +117,10 @@ async fn run_rawvideo(args: Vec<std::ffi::OsString>, w: u32, h: u32, max_frames:
     }
     drop(stdout);
 
-    let status = child.wait().await.map_err(|e| Failure::DecodeError(e.to_string()))?;
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| Failure::DecodeError(e.to_string()))?;
     let errtxt = stderr_task.await.unwrap_or_default();
     if frames.is_empty() {
         return Err(if !status.success() || !errtxt.trim().is_empty() {
@@ -120,13 +133,23 @@ async fn run_rawvideo(args: Vec<std::ffi::OsString>, w: u32, h: u32, max_frames:
 }
 
 /// One still frame at `t` seconds, letterboxed into w×h.
-pub async fn extract_frame(path: &Path, t: f64, w: u32, h: u32, hdr: bool) -> Result<RgbImage, Failure> {
+pub async fn extract_frame(
+    path: &Path,
+    t: f64,
+    w: u32,
+    h: u32,
+    hdr: bool,
+) -> Result<RgbImage, Failure> {
     let vf = filter_chain(w, h, None, hdr);
     let args: Vec<std::ffi::OsString> = vec![
-        "-ss".into(), format!("{t:.3}").into(),
-        "-i".into(), os_path(path),
-        "-frames:v".into(), "1".into(),
-        "-vf".into(), vf.into(),
+        "-ss".into(),
+        format!("{t:.3}").into(),
+        "-i".into(),
+        os_path(path),
+        "-frames:v".into(),
+        "1".into(),
+        "-vf".into(),
+        vf.into(),
     ];
     let frames = run_rawvideo(args, w, h, 1).await?;
     Ok(frames.into_iter().next().unwrap())
@@ -147,11 +170,16 @@ pub async fn extract_clip(
     let dur = n_frames as f64 / fps + 0.25;
     let vf = filter_chain(w, h, Some(fps), hdr);
     let args: Vec<std::ffi::OsString> = vec![
-        "-ss".into(), format!("{t:.3}").into(),
-        "-t".into(), format!("{dur:.3}").into(),
-        "-i".into(), os_path(path),
-        "-vf".into(), vf.into(),
-        "-frames:v".into(), n_frames.to_string().into(),
+        "-ss".into(),
+        format!("{t:.3}").into(),
+        "-t".into(),
+        format!("{dur:.3}").into(),
+        "-i".into(),
+        os_path(path),
+        "-vf".into(),
+        vf.into(),
+        "-frames:v".into(),
+        n_frames.to_string().into(),
     ];
     let mut frames = run_rawvideo(args, w, h, n_frames).await?;
     while frames.len() < n_frames {

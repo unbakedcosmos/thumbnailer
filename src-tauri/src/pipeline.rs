@@ -86,18 +86,30 @@ pub fn output_dir(source: &Path, config: &JobConfig) -> PathBuf {
 }
 
 pub fn artifact_path(source: &Path, config: &JobConfig, kind: ArtifactKind) -> PathBuf {
-    let stem = sanitize_stem(source.file_stem().and_then(|s| s.to_str()).unwrap_or("video"));
+    let stem = sanitize_stem(
+        source
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("video"),
+    );
     output_dir(source, config).join(format!("{stem}{}", kind.suffix()))
 }
 
 /// Static's JPEG fallback name (never `_contact.webp` — that's the animated grid's).
 fn static_jpg_path(source: &Path, config: &JobConfig) -> PathBuf {
-    let stem = sanitize_stem(source.file_stem().and_then(|s| s.to_str()).unwrap_or("video"));
+    let stem = sanitize_stem(
+        source
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("video"),
+    );
     output_dir(source, config).join(format!("{stem}_contact.jpg"))
 }
 
 fn exists_valid(p: &Path) -> bool {
-    std::fs::metadata(p).map(|m| m.is_file() && m.len() > 0).unwrap_or(false)
+    std::fs::metadata(p)
+        .map(|m| m.is_file() && m.len() > 0)
+        .unwrap_or(false)
 }
 
 fn header_meta<'a>(title: &'a str, meta: &VideoMeta) -> HeaderMeta<'a> {
@@ -111,7 +123,9 @@ fn header_meta<'a>(title: &'a str, meta: &VideoMeta) -> HeaderMeta<'a> {
 
 /// Evenly-sampled timestamps across the video (PRD FR8).
 fn sample_times(duration: f64, n: u32) -> Vec<f64> {
-    (0..n).map(|i| duration * (i as f64 + 0.5) / n as f64).collect()
+    (0..n)
+        .map(|i| duration * (i as f64 + 0.5) / n as f64)
+        .collect()
 }
 
 // ---------------------------------------------------------------- clip store
@@ -128,11 +142,20 @@ struct ClipStore {
 
 impl ClipStore {
     fn new(w: u32, h: u32, frames: usize) -> std::io::Result<Self> {
-        Ok(ClipStore { dir: tempfile::tempdir()?, files: Vec::new(), w, h, frames })
+        Ok(ClipStore {
+            dir: tempfile::tempdir()?,
+            files: Vec::new(),
+            w,
+            h,
+            frames,
+        })
     }
 
     fn push_clip(&mut self, frames: &[RgbImage]) -> std::io::Result<()> {
-        let path = self.dir.path().join(format!("tile{}.raw", self.files.len()));
+        let path = self
+            .dir
+            .path()
+            .join(format!("tile{}.raw", self.files.len()));
         let mut f = std::fs::File::create(&path)?;
         for fr in frames {
             f.write_all(fr.as_raw())?;
@@ -164,7 +187,8 @@ fn encode_png(img: &RgbImage) -> Result<Vec<u8>, Failure> {
 fn encode_jpeg(img: &RgbImage, q: u8) -> Result<Vec<u8>, Failure> {
     let mut out = Vec::new();
     let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, q);
-    enc.encode_image(img).map_err(|e| Failure::DecodeError(format!("jpeg encode: {e}")))?;
+    enc.encode_image(img)
+        .map_err(|e| Failure::DecodeError(format!("jpeg encode: {e}")))?;
     Ok(out)
 }
 
@@ -184,6 +208,7 @@ struct AnimFrames<'a> {
 }
 
 /// Compose + encode one animated-webp attempt at the given layout and quality.
+#[allow(clippy::too_many_arguments)]
 fn encode_animated(
     l: &SheetLayout,
     fonts: &Fonts,
@@ -216,11 +241,14 @@ fn encode_animated(
     for (j, &src_idx) in af.indices.iter().enumerate() {
         ctl.check()?;
         let mut frame = chrome.clone();
-        for tile in 0..(l.cols * l.rows) as usize {
-            let img = af.store.frame(tile, src_idx).map_err(|e| io_failure(&e, "clip spool"))?;
+        for (tile, &t) in times.iter().enumerate().take((l.cols * l.rows) as usize) {
+            let img = af
+                .store
+                .frame(tile, src_idx)
+                .map_err(|e| io_failure(&e, "clip spool"))?;
             blit_tile(&mut frame, l, tile as u32, &img);
             if show_timestamps {
-                draw_timestamp(&mut frame, l, tile as u32, fonts, &fmt_timestamp(times[tile]));
+                draw_timestamp(&mut frame, l, tile as u32, fonts, &fmt_timestamp(t));
             }
         }
         let ts_ms = (j as f64 * 1000.0 / af.fps) as i32;
@@ -249,13 +277,48 @@ fn anim_ladder(quality: u8) -> Vec<FitStep> {
     let q2 = (base_q - 14.0).max(38.0);
     let q3 = (base_q - 28.0).max(38.0);
     vec![
-        FitStep { q: base_q, fps: ANIM_FPS, n_frames: ANIM_FRAMES, scale: 1.0 },
-        FitStep { q: q2, fps: ANIM_FPS, n_frames: ANIM_FRAMES, scale: 1.0 },
-        FitStep { q: q3, fps: ANIM_FPS, n_frames: ANIM_FRAMES, scale: 1.0 },
-        FitStep { q: q3, fps: 8.0, n_frames: 20, scale: 1.0 },
-        FitStep { q: q3, fps: 8.0, n_frames: 16, scale: 1.0 },
-        FitStep { q: q3, fps: 8.0, n_frames: 16, scale: 0.8 },
-        FitStep { q: q3, fps: 8.0, n_frames: 16, scale: 0.65 },
+        FitStep {
+            q: base_q,
+            fps: ANIM_FPS,
+            n_frames: ANIM_FRAMES,
+            scale: 1.0,
+        },
+        FitStep {
+            q: q2,
+            fps: ANIM_FPS,
+            n_frames: ANIM_FRAMES,
+            scale: 1.0,
+        },
+        FitStep {
+            q: q3,
+            fps: ANIM_FPS,
+            n_frames: ANIM_FRAMES,
+            scale: 1.0,
+        },
+        FitStep {
+            q: q3,
+            fps: 8.0,
+            n_frames: 20,
+            scale: 1.0,
+        },
+        FitStep {
+            q: q3,
+            fps: 8.0,
+            n_frames: 16,
+            scale: 1.0,
+        },
+        FitStep {
+            q: q3,
+            fps: 8.0,
+            n_frames: 16,
+            scale: 0.8,
+        },
+        FitStep {
+            q: q3,
+            fps: 8.0,
+            n_frames: 16,
+            scale: 0.65,
+        },
     ]
 }
 
@@ -276,7 +339,12 @@ pub struct JobInput<'a> {
     pub fonts: &'a Fonts,
 }
 
-async fn generate_static(inp: &JobInput<'_>, ctl: &GenControl, p0: f32, span: f32) -> Result<ProducedArtifact, Failure> {
+async fn generate_static(
+    inp: &JobInput<'_>,
+    ctl: &GenControl,
+    p0: f32,
+    span: f32,
+) -> Result<ProducedArtifact, Failure> {
     let cfg = inp.config;
     let meta = inp.meta;
     let target = (cfg.target_mb * 1_000_000.0) as u64;
@@ -336,7 +404,11 @@ async fn generate_static(inp: &JobInput<'_>, ctl: &GenControl, p0: f32, span: f3
     let dest_jpg = static_jpg_path(inp.source, cfg);
     for (i, (sm, q)) in attempts.iter().enumerate() {
         ctl.check()?;
-        let img = if (*sm - scale_mult).abs() < f64::EPSILON { full.clone() } else { compose(*sm) };
+        let img = if (*sm - scale_mult).abs() < f64::EPSILON {
+            full.clone()
+        } else {
+            compose(*sm)
+        };
         let jpg = encode_jpeg(&img, *q)?;
         if jpg.len() as u64 <= target {
             // Quality floor (FR17a): the smallest rung still counts, below it we fail
@@ -358,7 +430,12 @@ async fn generate_static(inp: &JobInput<'_>, ctl: &GenControl, p0: f32, span: f3
     )))
 }
 
-async fn generate_animated(inp: &JobInput<'_>, ctl: &GenControl, p0: f32, span: f32) -> Result<ProducedArtifact, Failure> {
+async fn generate_animated(
+    inp: &JobInput<'_>,
+    ctl: &GenControl,
+    p0: f32,
+    span: f32,
+) -> Result<ProducedArtifact, Failure> {
     let cfg = inp.config;
     let meta = inp.meta;
     let target = (cfg.target_mb * 1_000_000.0) as u64;
@@ -375,12 +452,23 @@ async fn generate_animated(inp: &JobInput<'_>, ctl: &GenControl, p0: f32, span: 
 
     let inner_w = l0.tile_w - 2 * l0.hairline;
     let inner_h = l0.tile_h - 2 * l0.hairline;
-    let mut store = ClipStore::new(inner_w, inner_h, ANIM_FRAMES)
-        .map_err(|e| io_failure(&e, "temp spool"))?;
+    let mut store =
+        ClipStore::new(inner_w, inner_h, ANIM_FRAMES).map_err(|e| io_failure(&e, "temp spool"))?;
     for (i, &t) in times.iter().enumerate() {
         ctl.check()?;
-        let frames = extract_clip(inp.source, t, ANIM_FPS, ANIM_FRAMES, inner_w, inner_h, meta.hdr).await?;
-        store.push_clip(&frames).map_err(|e| io_failure(&e, "temp spool"))?;
+        let frames = extract_clip(
+            inp.source,
+            t,
+            ANIM_FPS,
+            ANIM_FRAMES,
+            inner_w,
+            inner_h,
+            meta.hdr,
+        )
+        .await?;
+        store
+            .push_clip(&frames)
+            .map_err(|e| io_failure(&e, "temp spool"))?;
         ctl.report(p0 + span * 0.55 * (i + 1) as f32 / n as f32);
     }
 
@@ -390,10 +478,25 @@ async fn generate_animated(inp: &JobInput<'_>, ctl: &GenControl, p0: f32, span: 
     for (i, step) in ladder.iter().enumerate() {
         ctl.check()?;
         let l = animated_layout(cfg.grid, aspect, cfg.quality, step.scale);
-        let mut af = AnimFrames { store: &mut store, indices: frame_indices(step), fps: step.fps };
+        let mut af = AnimFrames {
+            store: &mut store,
+            indices: frame_indices(step),
+            fps: step.fps,
+        };
         let base = p0 + span * (0.55 + 0.45 * i as f32 / n_steps as f32);
         let sp = span * 0.45 / n_steps as f32;
-        let bytes = encode_animated(&l, inp.fonts, &hm, &times, cfg.timestamps, &mut af, step.q, ctl, base, sp)?;
+        let bytes = encode_animated(
+            &l,
+            inp.fonts,
+            &hm,
+            &times,
+            cfg.timestamps,
+            &mut af,
+            step.q,
+            ctl,
+            base,
+            sp,
+        )?;
         if bytes.len() as u64 <= target {
             atomic_write(&dest, &bytes)?;
             ctl.report(p0 + span);
@@ -411,7 +514,12 @@ async fn generate_animated(inp: &JobInput<'_>, ctl: &GenControl, p0: f32, span: 
     )))
 }
 
-async fn generate_montage(inp: &JobInput<'_>, ctl: &GenControl, p0: f32, span: f32) -> Result<ProducedArtifact, Failure> {
+async fn generate_montage(
+    inp: &JobInput<'_>,
+    ctl: &GenControl,
+    p0: f32,
+    span: f32,
+) -> Result<ProducedArtifact, Failure> {
     let cfg = inp.config;
     let meta = inp.meta;
     let target = (cfg.target_mb * 1_000_000.0) as u64;
@@ -434,7 +542,8 @@ async fn generate_montage(inp: &JobInput<'_>, ctl: &GenControl, p0: f32, span: f
     let mut all_frames: Vec<RgbImage> = Vec::new();
     for (i, &t) in times.iter().enumerate() {
         ctl.check()?;
-        let frames = extract_clip(inp.source, t, ANIM_FPS, MONTAGE_SEG_FRAMES, w, h, meta.hdr).await?;
+        let frames =
+            extract_clip(inp.source, t, ANIM_FPS, MONTAGE_SEG_FRAMES, w, h, meta.hdr).await?;
         all_frames.extend(frames);
         ctl.report(p0 + span * 0.6 * (i + 1) as f32 / times.len() as f32);
     }
@@ -472,7 +581,12 @@ async fn generate_montage(inp: &JobInput<'_>, ctl: &GenControl, p0: f32, span: f
         for (j, fr) in picked.iter().enumerate() {
             ctl.check()?;
             let img = if *sc < 1.0 {
-                image::imageops::resize(*fr, sw.max(2), sh.max(2), image::imageops::FilterType::Triangle)
+                image::imageops::resize(
+                    *fr,
+                    sw.max(2),
+                    sh.max(2),
+                    image::imageops::FilterType::Triangle,
+                )
             } else {
                 (*fr).clone()
             };
@@ -493,10 +607,17 @@ async fn generate_montage(inp: &JobInput<'_>, ctl: &GenControl, p0: f32, span: f
             });
         }
     }
-    Err(Failure::QualityFloor(format!("montage ≥ {:.1} MB at floor", cfg.target_mb)))
+    Err(Failure::QualityFloor(format!(
+        "montage ≥ {:.1} MB at floor",
+        cfg.target_mb
+    )))
 }
 
 // ---------------------------------------------------------------- job entry
+
+type ArtifactFut<'a> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<ProducedArtifact, Failure>> + Send + 'a>,
+>;
 
 pub async fn run_job(
     source: &Path,
@@ -507,12 +628,21 @@ pub async fn run_job(
     let meta = probe(source).await?;
     ctl.report(0.05);
 
-    let title = source.file_name().and_then(|s| s.to_str()).unwrap_or("video");
+    let title = source
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("video");
 
     let out_dir = output_dir(source, config);
     std::fs::create_dir_all(&out_dir).map_err(|e| io_failure(&e, "creating output folder"))?;
 
-    let inp = JobInput { source, title, config, meta: &meta, fonts };
+    let inp = JobInput {
+        source,
+        title,
+        config,
+        meta: &meta,
+        fonts,
+    };
 
     // Idempotency (FR24): existing valid artifacts are skipped unless overwrite
     let mut skipped = Vec::new();
@@ -558,13 +688,13 @@ pub async fn run_job(
             ArtifactKind::Montage => 1.5,
         } / weights
             * 0.95;
-        let (fut, budget): (
-            std::pin::Pin<Box<dyn std::future::Future<Output = Result<ProducedArtifact, Failure>> + Send + '_>>,
-            Duration,
-        ) = match kind {
+        let (fut, budget): (ArtifactFut<'_>, Duration) = match kind {
             ArtifactKind::Static => (Box::pin(generate_static(&inp, ctl, p0, w)), STATIC_TIMEOUT),
             ArtifactKind::Animated => (Box::pin(generate_animated(&inp, ctl, p0, w)), ANIM_TIMEOUT),
-            ArtifactKind::Montage => (Box::pin(generate_montage(&inp, ctl, p0, w)), MONTAGE_TIMEOUT),
+            ArtifactKind::Montage => (
+                Box::pin(generate_montage(&inp, ctl, p0, w)),
+                MONTAGE_TIMEOUT,
+            ),
         };
         let art = tokio::time::timeout(budget, fut)
             .await
@@ -574,5 +704,11 @@ pub async fn run_job(
     }
     ctl.report(1.0);
 
-    Ok((meta, JobOutcome { artifacts, skipped_existing: skipped }))
+    Ok((
+        meta,
+        JobOutcome {
+            artifacts,
+            skipped_existing: skipped,
+        },
+    ))
 }

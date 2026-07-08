@@ -34,6 +34,7 @@ fn blend(dst: &mut Rgb<u8>, src: Rgb<u8>, a: f32) {
 
 /// Draw `text` with its top-left at (x, y). Returns the advance width.
 /// `tracking` is extra letter-spacing in px (the 0.06em of the label style).
+#[allow(clippy::too_many_arguments)]
 pub fn draw_text(
     img: &mut RgbImage,
     font: &FontRef,
@@ -69,7 +70,9 @@ pub fn draw_text(
 
 pub fn measure_text(font: &FontRef, px: f32, tracking: f32, text: &str) -> f32 {
     let scaled = font.as_scaled(PxScale::from(px));
-    text.chars().map(|c| scaled.h_advance(scaled.glyph_id(c)) + tracking).sum()
+    text.chars()
+        .map(|c| scaled.h_advance(scaled.glyph_id(c)) + tracking)
+        .sum()
 }
 
 /// Truncate with ellipsis to fit `max_w` (PRD FR11: never overflow the band).
@@ -141,8 +144,9 @@ pub fn layout(grid: GridDims, aspect: f64, scale: f64) -> SheetLayout {
     let pad_y = (CSS_PAD_Y * s).round() as u32;
     let hairline = (s.round().max(1.0)) as u32;
 
-    let header_h =
-        ((CSS_HEADER_BLOCK_H + CSS_HEADER_PAD_B + CSS_HEADER_MARGIN_B) * s).round() as u32 + hairline;
+    let header_h = ((CSS_HEADER_BLOCK_H + CSS_HEADER_PAD_B + CSS_HEADER_MARGIN_B) * s).round()
+        as u32
+        + hairline;
     let grid_top = pad_y + header_h;
     let card_w = 2 * pad_x + cols * tile_w + (cols - 1) * gap;
     let card_h = grid_top + rows * tile_h + (rows - 1) * gap + pad_y;
@@ -255,7 +259,15 @@ pub fn render_chrome(l: &SheetLayout, fonts: &Fonts, hm: &HeaderMeta) -> RgbImag
     let s = l.scale as f32;
 
     // Card border
-    stroke_rect(&mut img, 0, 0, l.card_w, l.card_h, l.hairline, theme::BORDER);
+    stroke_rect(
+        &mut img,
+        0,
+        0,
+        l.card_w,
+        l.card_h,
+        l.hairline,
+        theme::BORDER,
+    );
 
     // --- header band ---
     let x0 = l.pad_x as f32;
@@ -276,8 +288,12 @@ pub fn render_chrome(l: &SheetLayout, fonts: &Fonts, hm: &HeaderMeta) -> RgbImag
     let col_ws: Vec<f32> = fields
         .iter()
         .map(|(lab, val)| {
-            measure_text(&fonts.semibold, label_px, tracking, lab)
-                .max(measure_text(&fonts.medium, value_px, 0.0, val))
+            measure_text(&fonts.semibold, label_px, tracking, lab).max(measure_text(
+                &fonts.medium,
+                value_px,
+                0.0,
+                val,
+            ))
         })
         .collect();
     let meta_w: f32 = col_ws.iter().sum::<f32>() + col_gap * (fields.len() as f32 - 1.0);
@@ -289,7 +305,16 @@ pub fn render_chrome(l: &SheetLayout, fonts: &Fonts, hm: &HeaderMeta) -> RgbImag
         // Right-align both lines inside the column (numbers right-aligned per design)
         let lw = measure_text(&fonts.semibold, label_px, tracking, lab);
         let vw = measure_text(&fonts.medium, value_px, 0.0, val);
-        draw_text(&mut img, &fonts.semibold, label_px, theme::TEXT_DIM, cx + w - lw, y0, tracking, lab);
+        draw_text(
+            &mut img,
+            &fonts.semibold,
+            label_px,
+            theme::TEXT_DIM,
+            cx + w - lw,
+            y0,
+            tracking,
+            lab,
+        );
         draw_text(
             &mut img,
             &fonts.medium,
@@ -322,13 +347,28 @@ pub fn render_chrome(l: &SheetLayout, fonts: &Fonts, hm: &HeaderMeta) -> RgbImag
 
     // Divider under the header
     let div_y = l.pad_y + ((CSS_HEADER_BLOCK_H + CSS_HEADER_PAD_B) * l.scale).round() as u32;
-    fill_rect(&mut img, l.pad_x, div_y, l.card_w - 2 * l.pad_x, l.hairline, theme::BORDER_STRONG);
+    fill_rect(
+        &mut img,
+        l.pad_x,
+        div_y,
+        l.card_w - 2 * l.pad_x,
+        l.hairline,
+        theme::BORDER_STRONG,
+    );
 
     // Tile wells + borders
     for i in 0..(l.cols * l.rows) {
         let (tx, ty) = l.tile_origin(i);
         fill_rect(&mut img, tx, ty, l.tile_w, l.tile_h, theme::SURFACE2);
-        stroke_rect(&mut img, tx, ty, l.tile_w, l.tile_h, l.hairline, theme::BORDER);
+        stroke_rect(
+            &mut img,
+            tx,
+            ty,
+            l.tile_w,
+            l.tile_h,
+            l.hairline,
+            theme::BORDER,
+        );
         round_corners(
             &mut img,
             tx,
@@ -360,7 +400,15 @@ pub fn blit_tile(img: &mut RgbImage, l: &SheetLayout, idx: u32, tile: &RgbImage)
         }
     }
     stroke_rect(img, tx, ty, l.tile_w, l.tile_h, b, theme::BORDER);
-    round_corners(img, tx, ty, l.tile_w, l.tile_h, (CSS_TILE_RADIUS * l.scale).round() as u32, theme::CARD);
+    round_corners(
+        img,
+        tx,
+        ty,
+        l.tile_w,
+        l.tile_h,
+        (CSS_TILE_RADIUS * l.scale).round() as u32,
+        theme::CARD,
+    );
 }
 
 /// Timestamp pill, bottom-right of a tile (PRD FR9).

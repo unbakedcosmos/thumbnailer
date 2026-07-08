@@ -1,0 +1,11 @@
+node_modules/
+build/
+.svelte-kit/
+src-tauri/target/
+src-tauri/gen/
+thumbnailer-design/
+dist/
+verification/
+_bmad/
+_bmad-output/
+package-lock.json

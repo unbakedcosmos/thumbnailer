@@ -50,17 +50,17 @@ device names, no console flash on spawned encodes) is in place behind `cfg(windo
 
 ## Architecture (src-tauri/src)
 
-| Module | Role |
-| --- | --- |
-| `types.rs` | The template spec (PRD §5) + failure taxonomy (FR5) |
-| `theme.rs` | Design tokens + bundled JetBrains Mono |
-| `ffmpeg.rs` | Binary discovery (sidecar seam → PATH), Windows path/CLI safety |
-| `probe.rs` | ffprobe → duration/resolution/fps/codec/HDR, typed failures |
-| `extract.rs` | Frame + clip extraction over raw RGB pipes (VFR-safe, HDR tonemap when zscale exists) |
-| `render.rs` | The template executor: CSS-unit layout, header band, tile chrome, timestamps — shared by every artifact |
+| Module        | Role                                                                                                            |
+| ------------- | --------------------------------------------------------------------------------------------------------------- |
+| `types.rs`    | The template spec (PRD §5) + failure taxonomy (FR5)                                                             |
+| `theme.rs`    | Design tokens + bundled JetBrains Mono                                                                          |
+| `ffmpeg.rs`   | Binary discovery (sidecar seam → PATH), Windows path/CLI safety                                                 |
+| `probe.rs`    | ffprobe → duration/resolution/fps/codec/HDR, typed failures                                                     |
+| `extract.rs`  | Frame + clip extraction over raw RGB pipes (VFR-safe, HDR tonemap when zscale exists)                           |
+| `render.rs`   | The template executor: CSS-unit layout, header band, tile chrome, timestamps — shared by every artifact         |
 | `pipeline.rs` | Per-video generation + bounded auto-fit ladders (quality → fps → loop → resolution), atomic writes, idempotency |
-| `queue.rs` | Batch engine: concurrency, pause/stop/retry, manifest resume, events |
-| `commands.rs` | Tauri IPC surface |
+| `queue.rs`    | Batch engine: concurrency, pause/stop/retry, manifest resume, events                                            |
+| `commands.rs` | Tauri IPC surface                                                                                               |
 
 The frontend (`src/lib/*.svelte`) recreates `Thumbnailer.dc.html` from the design
 handoff: queue rail, editor pane, settings overlay, empty state — tokens verbatim

@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential pkg-config \
+            libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev \
+            libxdo-dev ffmpeg
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Lint (ESLint + Prettier)
+        run: npm run lint
+
+      - name: svelte-check
+        run: npm run check
+
+      # cargo needs the built frontend: tauri::generate_context! embeds ../build
+      - name: Build frontend
+        run: npm run build
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: rustfmt
+        run: cargo fmt --check
+        working-directory: src-tauri
+
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: src-tauri
+
+      # Pipeline + engine integration tests generate synthetic videos with the
+      # apt ffmpeg and assert the size guarantee, failure taxonomy, idempotency
+      # and batch isolation end to end.
+      - name: cargo test
+        run: cargo test --test pipeline_test
+        working-directory: src-tauri

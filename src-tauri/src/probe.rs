@@ -7,7 +7,14 @@ use std::process::Stdio;
 
 pub async fn probe(path: &Path) -> Result<VideoMeta, Failure> {
     let out = base_command(ffprobe_path())
-        .args(["-v", "error", "-print_format", "json", "-show_format", "-show_streams"])
+        .args([
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+        ])
         .arg(os_path(path))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -18,13 +25,13 @@ pub async fn probe(path: &Path) -> Result<VideoMeta, Failure> {
     let stderr = String::from_utf8_lossy(&out.stderr);
     if !out.status.success() {
         let s = stderr.to_lowercase();
-        return Err(if s.contains("moov atom not found") || s.contains("invalid data") {
-            Failure::Unreadable("truncated".into())
-        } else if s.contains("no such file") || s.contains("permission denied") {
-            Failure::Unreadable(first_line(&stderr))
-        } else {
-            Failure::Unreadable(first_line(&stderr))
-        });
+        return Err(
+            if s.contains("moov atom not found") || s.contains("invalid data") {
+                Failure::Unreadable("truncated".into())
+            } else {
+                Failure::Unreadable(first_line(&stderr))
+            },
+        );
     }
 
     let v: serde_json::Value = serde_json::from_slice(&out.stdout)
@@ -39,10 +46,15 @@ pub async fn probe(path: &Path) -> Result<VideoMeta, Failure> {
     let width = video["width"].as_u64().unwrap_or(0) as u32;
     let height = video["height"].as_u64().unwrap_or(0) as u32;
     if width == 0 || height == 0 {
-        return Err(Failure::UnsupportedCodec("video stream has no dimensions".into()));
+        return Err(Failure::UnsupportedCodec(
+            "video stream has no dimensions".into(),
+        ));
     }
 
-    let codec = video["codec_name"].as_str().unwrap_or("unknown").to_string();
+    let codec = video["codec_name"]
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
     let pix_fmt = video["pix_fmt"].as_str().unwrap_or("").to_string();
     let transfer = video["color_transfer"].as_str().unwrap_or("");
     let hdr = matches!(transfer, "smpte2084" | "arib-std-b67");
@@ -57,10 +69,20 @@ pub async fn probe(path: &Path) -> Result<VideoMeta, Failure> {
         .or_else(|| video["duration"].as_str().and_then(|d| d.parse().ok()))
         .unwrap_or(0.0);
     if duration_s <= 0.0 {
-        return Err(Failure::Unreadable("no duration (truncated or still being written)".into()));
+        return Err(Failure::Unreadable(
+            "no duration (truncated or still being written)".into(),
+        ));
     }
 
-    Ok(VideoMeta { duration_s, width, height, fps, codec, pix_fmt, hdr })
+    Ok(VideoMeta {
+        duration_s,
+        width,
+        height,
+        fps,
+        codec,
+        pix_fmt,
+        hdr,
+    })
 }
 
 fn parse_rate(r: &str) -> Option<f64> {

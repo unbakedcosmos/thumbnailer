@@ -39,7 +39,11 @@ pub struct ArtifactSet {
 
 impl Default for ArtifactSet {
     fn default() -> Self {
-        ArtifactSet { static_sheet: true, animated: true, montage: false }
+        ArtifactSet {
+            static_sheet: true,
+            animated: true,
+            montage: false,
+        }
     }
 }
 

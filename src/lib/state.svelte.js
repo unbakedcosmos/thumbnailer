@@ -78,6 +78,7 @@ export async function init() {
 }
 
 export async function addPaths(paths) {
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity -- local snapshot, not reactive state
   const known = new Set(app.jobs.map((j) => j.id));
   await invoke('add_paths', { paths });
   const state = await invoke('get_state');
