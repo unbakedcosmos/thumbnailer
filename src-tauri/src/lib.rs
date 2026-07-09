@@ -53,6 +53,7 @@ pub fn run() {
             commands::pause_batch,
             commands::stop_batch,
             commands::clear_queue,
+            commands::remove_job,
             commands::generate_one,
             commands::set_job_config,
             commands::apply_config_all,

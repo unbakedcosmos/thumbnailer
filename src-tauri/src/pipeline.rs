@@ -232,13 +232,44 @@ fn encode_webp_static(img: &RgbImage, q: f32) -> Vec<u8> {
         .to_vec()
 }
 
-/// Encode a composed image per the static format choice. The compression
-/// slider maps onto the lossy encoders; PNG ignores it (lossless).
-fn encode_static(img: &RgbImage, format: StaticFormat, quality: u8) -> Result<Vec<u8>, Failure> {
+/// Map the 0–100 compression slider onto each lossy codec's own quality scale.
+fn jpeg_quality(quality: u8) -> u8 {
+    (30 + quality as u32 * 65 / 100) as u8
+}
+fn webp_quality(quality: u8) -> f32 {
+    40.0 + quality as f32 * 0.55
+}
+
+/// Bake the compression quality into a single tile's *media* by round-tripping
+/// it through the chosen lossy codec. The sheet frame (borders, header band,
+/// timestamps) is composited on top and encoded separately at high quality
+/// (`encode_static_sheet`), so the quality slider softens only the video content
+/// inside each cell — never the chrome. PNG is lossless (its slider is hidden),
+/// so tiles pass through untouched. Any codec hiccup falls back to the raw tile.
+fn degrade_tile_media(tile: &RgbImage, format: StaticFormat, quality: u8) -> RgbImage {
+    match format {
+        StaticFormat::Png => tile.clone(),
+        StaticFormat::Jpeg => encode_jpeg(tile, jpeg_quality(quality))
+            .ok()
+            .and_then(|b| image::load_from_memory_with_format(&b, image::ImageFormat::Jpeg).ok())
+            .map(|d| d.to_rgb8())
+            .unwrap_or_else(|| tile.clone()),
+        StaticFormat::Webp => webp::Decoder::new(&encode_webp_static(tile, webp_quality(quality)))
+            .decode()
+            .map(|img| img.to_image().to_rgb8())
+            .unwrap_or_else(|| tile.clone()),
+    }
+}
+
+/// Encode the composed sheet. The frame/chrome is kept crisp at a high fixed
+/// quality; the per-tile media has already been degraded to the user's setting
+/// (see `degrade_tile_media`). PNG stays lossless.
+fn encode_static_sheet(img: &RgbImage, format: StaticFormat) -> Result<Vec<u8>, Failure> {
+    const SHEET_Q: u8 = 95;
     match format {
         StaticFormat::Png => encode_png(img),
-        StaticFormat::Jpeg => encode_jpeg(img, (30 + quality as u32 * 65 / 100) as u8),
-        StaticFormat::Webp => Ok(encode_webp_static(img, 40.0 + quality as f32 * 0.55)),
+        StaticFormat::Jpeg => encode_jpeg(img, SHEET_Q),
+        StaticFormat::Webp => Ok(encode_webp_static(img, SHEET_Q as f32)),
     }
 }
 
@@ -472,9 +503,10 @@ pub struct JobInput<'a> {
     pub fonts: &'a Fonts,
 }
 
-/// Compose a framed sheet image: extract one frame per tile, apply the frame
-/// template. Used by both the static sheet (N×M) and the montage (1×1 — "one
-/// composed frame", CHANGELOG §1.2).
+/// Compose a framed sheet image: extract one frame per tile, degrade each tile's
+/// media to the compression quality, then blit it into the template chrome. The
+/// chrome itself is encoded crisp afterwards (`encode_static_sheet`), so quality
+/// governs the video content only, not the frame.
 async fn compose_still_sheet(
     inp: &JobInput<'_>,
     grid: GridDims,
@@ -505,6 +537,7 @@ async fn compose_still_sheet(
             cfg.static_cfg.sharpen,
         )
         .await?;
+        let tile = degrade_tile_media(&tile, cfg.static_cfg.format, cfg.static_cfg.quality);
         blit_tile(&mut img, &l, i as u32, &tile);
         draw_timestamp(
             &mut img,
@@ -528,7 +561,7 @@ async fn generate_still(
 ) -> Result<ProducedArtifact, Failure> {
     let cfg = inp.config;
     let img = compose_still_sheet(inp, cfg.grid, ctl, p0, span).await?;
-    let bytes = encode_static(&img, cfg.static_cfg.format, cfg.static_cfg.quality)?;
+    let bytes = encode_static_sheet(&img, cfg.static_cfg.format)?;
     let dest = resolve_dest(inp.source, cfg, ArtifactKind::Static, ctl.overwrite);
     atomic_write(&dest, &bytes)?;
     if ctl.overwrite {

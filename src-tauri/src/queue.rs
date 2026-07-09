@@ -380,6 +380,23 @@ impl Engine {
         self.save_manifest();
     }
 
+    /// Drop a single file from the queue (cancelling it first if it's running).
+    /// Emptying the queue this way resets the batch to Idle, same as `clear`.
+    pub fn remove_job(&self, id: u64) {
+        let mut st = self.state.lock().unwrap();
+        if let Some(c) = st.cancels.remove(&id) {
+            c.cancel();
+        }
+        st.jobs.retain(|j| j.id != id);
+        if st.jobs.is_empty() {
+            st.batch = BatchStatus::Idle;
+        }
+        self.emit_queue(&st);
+        self.emit_batch(&st);
+        drop(st);
+        self.save_manifest();
+    }
+
     pub fn jobs_snapshot(&self) -> (Vec<Job>, BatchView) {
         let st = self.state.lock().unwrap();
         (st.jobs.clone(), Self::batch_view(&st))

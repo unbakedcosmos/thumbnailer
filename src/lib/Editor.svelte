@@ -356,6 +356,7 @@
           </div>
           <div class="field span2f">
             <span class="label">Compression quality</span>
+            <span class="hint">Frame stays crisp — tunes the media inside each tile</span>
             {#if !isPng}
               <div class="quality-row">
                 <div
@@ -722,6 +723,11 @@
   }
   .small {
     font-size: 12px;
+  }
+  .hint {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-top: -2px;
   }
   .chip {
     font-size: 12px;

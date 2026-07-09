@@ -3,7 +3,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
-import { open } from '@tauri-apps/plugin-dialog';
+import { open, confirm } from '@tauri-apps/plugin-dialog';
 import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
 
 export const GRID_PRESETS = [
@@ -149,6 +149,34 @@ export async function pickFolder() {
 export async function pickFiles() {
   const files = await open({ multiple: true, title: 'Add files', filters: [VIDEO_FILTER] });
   if (files?.length) await addPaths(files);
+}
+
+// Empty the whole queue (cancels anything running). Confirmed first because it
+// throws away every added file and any in-flight encode.
+export async function clearQueue() {
+  if (!app.jobs.length) return;
+  const running = app.batch.status === 'running';
+  const ok = await confirm(
+    running
+      ? 'A batch is running. Clear the queue and cancel it?'
+      : 'Remove all files from the queue?',
+    { title: 'Clear queue', kind: 'warning' }
+  );
+  if (!ok) return;
+  await invoke('clear_queue');
+  app.jobs = [];
+  app.batch = { status: 'idle', total: 0, done: 0, failed: 0, skipped: 0, running: 0 };
+  app.selectedId = null;
+  app.resumedNote = null;
+  app.queueFilter = 'all';
+}
+
+// Drop one file from the queue; keep the selection sensible if it was selected.
+export async function removeJob(id) {
+  await invoke('remove_job', { id });
+  app.jobs = app.jobs.filter((j) => j.id !== id);
+  if (app.selectedId === id) app.selectedId = app.jobs[0]?.id ?? null;
+  if (!app.jobs.length) app.resumedNote = null;
 }
 
 export function syncJobConfig(job) {
@@ -313,9 +341,11 @@ export function estimateMontageMB(job) {
   return Math.max(0.05, Math.min(raw, c.animated.targetMb));
 }
 
-/// Static sheet estimate — one composed image, so cost is per-tile detail by
-/// format. PNG is lossless (quality-independent); JPEG/WebP scale with quality,
-/// and WebP is markedly smaller than JPEG at the same setting.
+/// Static sheet estimate — one composed image. The sheet frame is always
+/// encoded crisp (high fixed quality) and only the media inside each tile is
+/// degraded to the quality setting, so size is driven mostly by format + tile
+/// count and is nearly flat in quality (measured on the demo library). WebP is
+/// markedly smaller than JPEG; PNG is lossless.
 export function estimateStaticMB(job) {
   const c = job.config;
   const tiles = c.grid.cols * c.grid.rows;
@@ -324,8 +354,8 @@ export function estimateStaticMB(job) {
     c.static.format === 'png'
       ? 0.043 // lossless — flat
       : c.static.format === 'webp'
-        ? 0.006 + 0.01 * q
-        : 0.018 + 0.022 * q; // jpeg
+        ? 0.013 + 0.002 * q
+        : 0.05 + 0.006 * q; // jpeg — crisp-frame floor dominates
   return Math.max(0.05, tiles * perTile);
 }
 

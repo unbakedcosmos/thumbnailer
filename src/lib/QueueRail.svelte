@@ -1,5 +1,5 @@
 <script>
-  import { app, fmtMB, visibleJobs, retryJob } from '$lib/state.svelte.js';
+  import { app, fmtMB, visibleJobs, retryJob, removeJob } from '$lib/state.svelte.js';
 
   const issuesCount = $derived(
     app.jobs.filter((j) => j.status === 'failed' || j.status === 'skipped').length
@@ -92,6 +92,15 @@
             }}>retry</button
           >
         {/if}
+        <button
+          class="remove"
+          title="Remove from queue"
+          aria-label="Remove {job.name} from queue"
+          onclick={(e) => {
+            e.stopPropagation();
+            removeJob(job.id);
+          }}>×</button
+        >
       </div>
     {/each}
   </div>
@@ -124,6 +133,24 @@
     cursor: pointer;
     flex: 0 0 auto;
     background: transparent;
+  }
+  .remove {
+    font-size: 15px;
+    line-height: 1;
+    color: var(--text-dim);
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    padding: 0 2px;
+    flex: 0 0 auto;
+    opacity: 0;
+    transition: opacity 0.12s;
+  }
+  .row:hover .remove {
+    opacity: 1;
+  }
+  .remove:hover {
+    color: var(--danger);
   }
   .follow {
     font-size: 12px;

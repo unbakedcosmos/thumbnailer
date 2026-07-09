@@ -3,6 +3,7 @@
     app,
     pickFolder,
     pickFiles,
+    clearQueue,
     startBatch,
     pauseBatch,
     stopBatch
@@ -16,6 +17,11 @@
   <div class="wordmark">thumbnailer<span class="dot-accent">.</span></div>
   <button class="btn-ghost" onclick={pickFolder}>+ Add folder</button>
   <button class="btn-ghost" onclick={pickFiles}>+ Add files</button>
+  {#if app.jobs.length}
+    <button class="btn-ghost clear" onclick={clearQueue} title="Remove all files from the queue"
+      >Clear</button
+    >
+  {/if}
   <div class="spacer"></div>
 
   {#if app.resumedNote}
@@ -79,6 +85,10 @@
   .wordmark {
     font-size: 15px;
     font-weight: 700;
+  }
+  .clear:hover {
+    color: var(--danger);
+    border-color: var(--danger);
   }
   .dot-accent {
     color: var(--accent);

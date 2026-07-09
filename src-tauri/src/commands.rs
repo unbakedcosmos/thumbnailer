@@ -66,6 +66,12 @@ pub async fn clear_queue(engine: Eng<'_>) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn remove_job(engine: Eng<'_>, id: u64) -> Result<(), String> {
+    engine.remove_job(id);
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn generate_one(
     engine: Eng<'_>,
     id: u64,

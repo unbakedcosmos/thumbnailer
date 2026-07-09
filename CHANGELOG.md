@@ -3,6 +3,26 @@
 All notable changes to Thumbnailer. Versions are the git tags that trigger a
 release build; hyphenated tags (e.g. `v0.3.0-beta`) publish as prereleases.
 
+## v0.3.3-beta
+
+### Added
+
+- **Clear the queue / remove individual files.** A "Clear" button in the header
+  (with a confirm, and a warning if a batch is running) empties the whole queue;
+  each queue row now has a hover **×** to drop a single file. Adding a new folder
+  no longer just stacks onto whatever was already loaded.
+
+### Changed
+
+- **Static compression quality now affects only the media inside each tile — the
+  sheet frame stays crisp.** Previously the whole composed sheet (header text,
+  timestamps, borders and all) was encoded at the quality setting, so lowering
+  quality blurred the frame too. Now each tile's video content is degraded to the
+  chosen quality and the sheet frame is always encoded crisp. Because of this the
+  static quality slider is essentially flat in file size (static sheets are not
+  size-gated — the size lever is the animated/montage target); the estimate was
+  recalibrated to match.
+
 ## v0.3.2-beta
 
 ### Added
