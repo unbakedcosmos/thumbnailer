@@ -7,7 +7,8 @@ on:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # Self-hosted Forgejo runner (labels: ci-amd64, ubuntu-latest, …)
+    runs-on: ci-amd64
     steps:
       - uses: actions/checkout@v4
 
@@ -18,10 +19,12 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential pkg-config \
+          SUDO=""
+          [ "$(id -u)" != "0" ] && command -v sudo >/dev/null && SUDO=sudo
+          $SUDO apt-get update
+          $SUDO apt-get install -y libwebkit2gtk-4.1-dev build-essential pkg-config \
             libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev \
-            libxdo-dev ffmpeg
+            libxdo-dev ffmpeg curl
         env:
           DEBIAN_FRONTEND: noninteractive
 
@@ -38,11 +41,11 @@ jobs:
       - name: Build frontend
         run: npm run build
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: https://github.com/dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: https://github.com/Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
           cache-on-failure: true
