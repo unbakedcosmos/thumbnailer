@@ -243,18 +243,20 @@ export function jobIsPortrait(job) {
   return job.meta ? job.meta.height > job.meta.width : false;
 }
 
-/// Animated estimate (mint mono-num readout) — an estimate, not the encode.
-/// Covers the grid when Animated is on, plus the single-cell montage loop.
+/// Animated-grid estimate (mint mono-num readout) — an estimate, not the encode.
 export function estimateAnimatedMB(job) {
   const c = job.config;
   const q = c.animated.quality / 100;
-  let base = 0;
-  if (c.artifacts.animated) {
-    const tiles = c.grid.cols * c.grid.rows;
-    base += Math.max(0.8, q * 9.5) * (tiles / 27);
-  }
-  if (c.artifacts.montage) base += 0.3 + q * 0.9;
-  return (c.animated.format === 'gif' ? 1.8 : 1) * Math.max(0.2, base);
+  const tiles = c.grid.cols * c.grid.rows;
+  const base = Math.max(0.8, q * 9.5) * (tiles / 27);
+  return (c.animated.format === 'gif' ? 1.8 : 1) * base;
+}
+
+/// Single-cell montage loop estimate (~6 sequential clips).
+export function estimateMontageMB(job) {
+  const c = job.config;
+  const q = c.animated.quality / 100;
+  return (c.animated.format === 'gif' ? 1.8 : 1) * (0.3 + q * 0.9);
 }
 
 /// Static sheet estimate (per prototype: tiles × factor, PNG fixed).

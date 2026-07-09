@@ -7,6 +7,7 @@
     generateSelected,
     applyConfigToBatch,
     estimateAnimatedMB,
+    estimateMontageMB,
     estimateStaticMB,
     outputFilesNote,
     fmtDuration,
@@ -32,7 +33,10 @@
   );
 
   const animEst = $derived(job ? estimateAnimatedMB(job) : 0);
-  const overTarget = $derived(job ? animEst > job.config.animated.targetMb : false);
+  const montageEst = $derived(job ? estimateMontageMB(job) : 0);
+  // The panel readout tracks the largest gated artifact that's switched on
+  const panelEst = $derived(job ? (job.config.artifacts.animated ? animEst : montageEst) : 0);
+  const overTarget = $derived(job ? panelEst > job.config.animated.targetMb : false);
   const staticEst = $derived(job ? estimateStaticMB(job) : 0);
   const isPng = $derived(job?.config.static.format === 'png');
 
@@ -359,7 +363,7 @@
                 <b style:left="{job.config.animated.quality}%"></b>
               </div>
               <span class="est" class:danger={overTarget}
-                >≈ {animEst.toFixed(1)} MB est. · target {job.config.animated.targetMb} MB</span
+                >≈ {panelEst.toFixed(1)} MB est. · target {job.config.animated.targetMb} MB</span
               >
             </div>
           </div>
@@ -463,21 +467,44 @@
       </div>
     {/if}
 
-    {#if showAnimatedPanel}
-      <div class="preview-head">
-        <span class="label"
-          >{job.config.artifacts.montage && !job.config.artifacts.animated
-            ? 'Montage loop'
-            : 'Animated preview loop'}</span
-        >
-      </div>
-      <div class="preview loop-well">
-        <div class="loop">▶</div>
+    {#if job.config.artifacts.animated}
+      <!-- The animated artifact IS a tiled grid — preview it as one -->
+      <div class="preview-head"><span class="label">Animated grid preview</span></div>
+      <div class="preview">
+        <div class="pgrid" style:grid-template-columns="repeat({previewCols}, 1fr)">
+          {#each Array(previewShown), i (i)}
+            <div class="tile play-tile" style:aspect-ratio={isPortrait ? '9/16' : '16/9'}>
+              <span class="play">▶</span>
+            </div>
+          {/each}
+        </div>
       </div>
       <div class="caption">
-        <span class="dim">looping preview · not final encode</span>
-        <span class="est" class:danger={overTarget}
+        <span class="dim"
+          >every tile loops · {previewShown} of {previewTotal} tiles shown · not final encode</span
+        >
+        <span class="est" class:danger={animEst > job.config.animated.targetMb}
           >{animEst.toFixed(1)} MB est. · target {job.config.animated.targetMb} MB</span
+        >
+      </div>
+    {/if}
+
+    {#if job.config.artifacts.montage}
+      <!-- Montage: one cell playing sequential clips — a single box -->
+      <div class="preview-head"><span class="label">Montage loop</span></div>
+      <div class="preview loop-well">
+        <div
+          class="tile play-tile montage-cell"
+          style:aspect-ratio={isPortrait ? '9/16' : '16/9'}
+          style:width={isPortrait ? '120px' : '220px'}
+        >
+          <span class="play">▶</span>
+        </div>
+      </div>
+      <div class="caption">
+        <span class="dim">one cell · 6 sequential clips · not final encode</span>
+        <span class="est" class:danger={montageEst > job.config.animated.targetMb}
+          >{montageEst.toFixed(1)} MB est. · target {job.config.animated.targetMb} MB</span
         >
       </div>
     {/if}
@@ -766,16 +793,17 @@
     display: flex;
     justify-content: center;
   }
-  .loop {
-    width: 64px;
-    height: 64px;
-    border-radius: var(--r-full);
-    border: 1px solid var(--border);
-    background: var(--surface-2);
+  .play-tile {
     display: flex;
     align-items: center;
     justify-content: center;
+  }
+  .play {
     color: var(--accent);
+    font-size: 14px;
+    opacity: 0.75;
+  }
+  .montage-cell .play {
     font-size: 20px;
   }
   .caption {
