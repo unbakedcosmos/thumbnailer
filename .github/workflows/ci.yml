@@ -15,6 +15,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
 
       - name: Install system dependencies
         run: |
@@ -47,6 +48,7 @@ jobs:
       - uses: https://github.com/Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          cache-on-failure: true
 
       - name: rustfmt
         run: cargo fmt --check

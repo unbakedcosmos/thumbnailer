@@ -13,6 +13,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
 
       - name: Install system dependencies
         run: |
@@ -32,6 +33,16 @@ jobs:
       - uses: https://github.com/Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          cache-on-failure: true
+
+      # The xwin Windows SDK (~1.1 GB) and tauri's bundler tools (linuxdeploy,
+      # NSIS plugins) live in ~/.cache — gone with the container unless cached
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/cargo-xwin
+            ~/.cache/tauri
+          key: xwin-tauri-tools-v1
 
       # Prebuilt cargo-xwin (avoids a slow `cargo install` on every release)
       - uses: https://github.com/taiki-e/install-action@v2
