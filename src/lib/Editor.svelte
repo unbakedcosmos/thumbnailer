@@ -36,7 +36,13 @@
   const montageEst = $derived(job ? estimateMontageMB(job) : 0);
   // The panel readout tracks the largest gated artifact that's switched on
   const panelEst = $derived(job ? (job.config.artifacts.animated ? animEst : montageEst) : 0);
-  const overTarget = $derived(job ? panelEst > job.config.animated.targetMb : false);
+  // Estimates clamp at the target (the auto-fit gate). Hitting the ceiling means
+  // the size is capped and extra quality buys crispness, not bytes — surface that
+  // so the slider doesn't read as a no-op near the top.
+  const target = $derived(job ? job.config.animated.targetMb : 0);
+  const animGated = $derived(job ? animEst >= target - 0.02 : false);
+  const montGated = $derived(job ? montageEst >= target - 0.02 : false);
+  const panelGated = $derived(job ? panelEst >= target - 0.02 : false);
   const staticEst = $derived(job ? estimateStaticMB(job) : 0);
   const isPng = $derived(job?.config.static.format === 'png');
 
@@ -54,6 +60,16 @@
     customGrid = false;
   });
   const showCustom = $derived(customGrid || !gridIsPreset);
+
+  // Output type is single-select. Coerce any legacy config that has more than
+  // one artifact on (e.g. a manifest from before this UI) down to its priority
+  // pick, so the backend produces exactly what the editor shows.
+  $effect(() => {
+    if (!job) return;
+    const a = job.config.artifacts;
+    const on = [a.staticSheet, a.animated, a.montage].filter(Boolean).length;
+    if (on !== 1) setArtifact(outputType);
+  });
 
   // Preview renders a capped sample (≤3 rows), not the literal tile count
   const previewCols = $derived(job?.config.grid.cols ?? 3);
@@ -84,8 +100,13 @@
     job.config.orientation = o;
     syncJobConfig(job);
   }
-  function toggleArtifact(key) {
-    job.config.artifacts[key] = !job.config.artifacts[key];
+  // Output type is single-select: a file produces exactly one of the three.
+  function setArtifact(key) {
+    job.config.artifacts = {
+      staticSheet: key === 'staticSheet',
+      animated: key === 'animated',
+      montage: key === 'montage'
+    };
     syncJobConfig(job);
   }
   function setStaticFormat(f) {
@@ -162,6 +183,14 @@
     { key: 'animated', label: 'Animated' },
     { key: 'montage', label: 'Montage' }
   ];
+  // The active output type (priority order handles any legacy multi-on config).
+  const outputType = $derived(
+    job?.config.artifacts.animated
+      ? 'animated'
+      : job?.config.artifacts.montage
+        ? 'montage'
+        : 'staticSheet'
+  );
 </script>
 
 {#if job}
@@ -182,16 +211,16 @@
     {/if}
 
     <div class="field artifacts-row">
-      <span class="label">Artifacts</span>
-      <div class="chips">
+      <span class="label">Output type</span>
+      <div class="seg-group" role="radiogroup" aria-label="Output type">
         {#each artifactDefs as a (a.key)}
           <button
-            class="chip"
-            class:on={job.config.artifacts[a.key]}
-            onclick={() => toggleArtifact(a.key)}
+            class="seg"
+            class:active={outputType === a.key}
+            role="radio"
+            aria-checked={outputType === a.key}
+            onclick={() => setArtifact(a.key)}>{a.label}</button
           >
-            <span class="sq" class:on={job.config.artifacts[a.key]}></span>{a.label}
-          </button>
         {/each}
       </div>
     </div>
@@ -338,7 +367,7 @@
             <span class="label">Target size</span>
             <div class="stepper">
               <button onclick={() => setTarget(-1)} aria-label="Decrease target">−</button>
-              <span class="val" class:danger={overTarget}>{job.config.animated.targetMb} MB</span>
+              <span class="val">{job.config.animated.targetMb} MB</span>
               <button onclick={() => setTarget(1)} aria-label="Increase target">+</button>
             </div>
           </div>
@@ -362,9 +391,15 @@
                 <i style:width="{job.config.animated.quality}%"></i>
                 <b style:left="{job.config.animated.quality}%"></b>
               </div>
-              <span class="est" class:danger={overTarget}
-                >≈ {panelEst.toFixed(1)} MB est. · target {job.config.animated.targetMb} MB</span
-              >
+              {#if panelGated}
+                <span class="est capped"
+                  >≤ {job.config.animated.targetMb} MB · size-capped — quality tunes crispness</span
+                >
+              {:else}
+                <span class="est"
+                  >≈ {panelEst.toFixed(1)} MB est. · target {job.config.animated.targetMb} MB</span
+                >
+              {/if}
             </div>
           </div>
         </div>
@@ -483,8 +518,10 @@
         <span class="dim"
           >every tile loops · {previewShown} of {previewTotal} tiles shown · not final encode</span
         >
-        <span class="est" class:danger={animEst > job.config.animated.targetMb}
-          >{animEst.toFixed(1)} MB est. · target {job.config.animated.targetMb} MB</span
+        <span class="est" class:capped={animGated}
+          >{animGated
+            ? `≤ ${job.config.animated.targetMb} MB · size-capped`
+            : `${animEst.toFixed(1)} MB est. · target ${job.config.animated.targetMb} MB`}</span
         >
       </div>
     {/if}
@@ -503,8 +540,10 @@
       </div>
       <div class="caption">
         <span class="dim">one cell · 6 sequential clips · not final encode</span>
-        <span class="est" class:danger={montageEst > job.config.animated.targetMb}
-          >{montageEst.toFixed(1)} MB est. · target {job.config.animated.targetMb} MB</span
+        <span class="est" class:capped={montGated}
+          >{montGated
+            ? `≤ ${job.config.animated.targetMb} MB · size-capped`
+            : `${montageEst.toFixed(1)} MB est. · target ${job.config.animated.targetMb} MB`}</span
         >
       </div>
     {/if}
@@ -653,17 +692,12 @@
     font-size: 12px;
     white-space: nowrap;
   }
-  .est.danger,
-  .val.danger {
-    color: var(--danger);
+  .est.capped {
+    color: var(--text-dim);
+    font-weight: 600;
   }
   .small {
     font-size: 12px;
-  }
-  .chips {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
   }
   .chip {
     font-size: 12px;

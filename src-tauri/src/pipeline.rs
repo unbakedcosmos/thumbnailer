@@ -99,6 +99,34 @@ pub fn artifact_path(source: &Path, config: &JobConfig, kind: ArtifactKind) -> P
     output_dir(source, config).join(format!("{}{}", stem_of(source), kind.suffix(config)))
 }
 
+/// Resolve where an artifact is actually written. Overwrite ON replaces the
+/// canonical path in place. Overwrite OFF preserves any existing file and
+/// writes the next free `name (N).ext` variant instead (never clobbers, never
+/// silently skips — the user always gets fresh output alongside the old).
+fn resolve_dest(source: &Path, config: &JobConfig, kind: ArtifactKind, overwrite: bool) -> PathBuf {
+    let base = artifact_path(source, config, kind);
+    if overwrite || !exists_valid(&base) {
+        return base;
+    }
+    let dir = base.parent().unwrap_or_else(|| Path::new("."));
+    let stem = base
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("artifact");
+    let ext = base.extension().and_then(|s| s.to_str());
+    for n in 1..100_000 {
+        let name = match ext {
+            Some(e) => format!("{stem} ({n}).{e}"),
+            None => format!("{stem} ({n})"),
+        };
+        let cand = dir.join(name);
+        if !cand.exists() {
+            return cand;
+        }
+    }
+    base
+}
+
 /// Remove artifacts of the same kind written under a different format choice,
 /// so a format switch doesn't leave both `_contact.png` and `_contact.jpg`.
 fn remove_stale_siblings(source: &Path, config: &JobConfig, kind: ArtifactKind, keep: &Path) {
@@ -501,9 +529,11 @@ async fn generate_still(
     let cfg = inp.config;
     let img = compose_still_sheet(inp, cfg.grid, ctl, p0, span).await?;
     let bytes = encode_static(&img, cfg.static_cfg.format, cfg.static_cfg.quality)?;
-    let dest = artifact_path(inp.source, cfg, ArtifactKind::Static);
+    let dest = resolve_dest(inp.source, cfg, ArtifactKind::Static, ctl.overwrite);
     atomic_write(&dest, &bytes)?;
-    remove_stale_siblings(inp.source, cfg, ArtifactKind::Static, &dest);
+    if ctl.overwrite {
+        remove_stale_siblings(inp.source, cfg, ArtifactKind::Static, &dest);
+    }
     ctl.report(p0 + span);
     Ok(ProducedArtifact {
         kind: ArtifactKind::Static,
@@ -550,7 +580,7 @@ async fn generate_montage(
         ctl.report(p0 + span * 0.6 * (i + 1) as f32 / times.len() as f32);
     }
 
-    let dest = artifact_path(inp.source, cfg, ArtifactKind::Montage);
+    let dest = resolve_dest(inp.source, cfg, ArtifactKind::Montage, ctl.overwrite);
     let base_q = (55.0 + 0.4 * anim.quality as f32).min(92.0);
     let q3 = (base_q - 28.0).max(38.0);
     // quality → fps → resolution, same governed order as the grid
@@ -587,7 +617,9 @@ async fn generate_montage(
         let data = enc.finish()?;
         if data.len() as u64 <= target {
             atomic_write(&dest, &data)?;
-            remove_stale_siblings(inp.source, cfg, ArtifactKind::Montage, &dest);
+            if ctl.overwrite {
+                remove_stale_siblings(inp.source, cfg, ArtifactKind::Montage, &dest);
+            }
             ctl.report(p0 + span);
             return Ok(ProducedArtifact {
                 kind: ArtifactKind::Montage,
@@ -648,7 +680,7 @@ async fn generate_animated(
         ctl.report(p0 + span * 0.55 * (i + 1) as f32 / n as f32);
     }
 
-    let dest = artifact_path(inp.source, cfg, ArtifactKind::Animated);
+    let dest = resolve_dest(inp.source, cfg, ArtifactKind::Animated, ctl.overwrite);
     let ladder = anim_ladder(anim.quality, anim.format);
     let n_steps = ladder.len();
     for (i, step) in ladder.iter().enumerate() {
@@ -676,7 +708,9 @@ async fn generate_animated(
         )?;
         if bytes.len() as u64 <= target {
             atomic_write(&dest, &bytes)?;
-            remove_stale_siblings(inp.source, cfg, ArtifactKind::Animated, &dest);
+            if ctl.overwrite {
+                remove_stale_siblings(inp.source, cfg, ArtifactKind::Animated, &dest);
+            }
             ctl.report(p0 + span);
             return Ok(ProducedArtifact {
                 kind: ArtifactKind::Animated,
@@ -725,8 +759,11 @@ pub async fn run_job(
         fonts,
     };
 
-    // Idempotency (FR24): existing valid artifacts are skipped unless overwrite
-    let mut skipped = Vec::new();
+    // Every enabled artifact is produced. With overwrite ON the canonical file
+    // is replaced in place; with overwrite OFF an existing file is preserved and
+    // a numbered `name (N).ext` copy is written instead (see resolve_dest), so a
+    // re-run never clobbers and never silently no-ops.
+    let skipped = Vec::new();
     let mut wanted: Vec<ArtifactKind> = Vec::new();
     let a = &config.artifacts;
     for (on, kind) in [
@@ -734,12 +771,7 @@ pub async fn run_job(
         (a.animated, ArtifactKind::Animated),
         (a.montage, ArtifactKind::Montage),
     ] {
-        if !on {
-            continue;
-        }
-        if exists_valid(&artifact_path(source, config, kind)) && !ctl.overwrite {
-            skipped.push(kind);
-        } else {
+        if on {
             wanted.push(kind);
         }
     }

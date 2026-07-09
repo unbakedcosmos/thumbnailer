@@ -85,7 +85,11 @@
       <div class="row">
         <div>
           <div class="label">Overwrite existing</div>
-          <div class="help">re-generate replaces prior artifacts</div>
+          <div class="help">
+            {app.settings.overwrite
+              ? 'replaces prior artifacts in place'
+              : 'keeps prior artifacts — writes a numbered copy, e.g. “(1)”'}
+          </div>
         </div>
         <button class="chip" class:on={app.settings.overwrite} onclick={toggleOverwrite}>
           <span class="sq" class:on={app.settings.overwrite}></span>{app.settings.overwrite

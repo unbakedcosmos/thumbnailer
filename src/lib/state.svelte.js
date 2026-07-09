@@ -243,29 +243,46 @@ export function jobIsPortrait(job) {
   return job.meta ? job.meta.height > job.meta.width : false;
 }
 
-/// Animated-grid estimate (mint mono-num readout) — an estimate, not the encode.
+// Estimates are pre-encode guesses, calibrated against measured output on the
+// demo library (see src-tauri/tests). They scale with tile count, quality and
+// format; the animated/montage previews are size-gated (pipeline.rs), so their
+// estimate is clamped at the target — the encoder never emits above it.
+
+/// Animated-grid estimate. Per-tile cost grows with quality; the total is
+/// capped at the target since the auto-fit ladder guarantees it fits.
 export function estimateAnimatedMB(job) {
   const c = job.config;
   const q = c.animated.quality / 100;
   const tiles = c.grid.cols * c.grid.rows;
-  const base = Math.max(0.8, q * 9.5) * (tiles / 27);
-  return (c.animated.format === 'gif' ? 1.8 : 1) * base;
+  // ~1.5 MB floor + ~8.6 MB/full-quality for a 27-tile WebP grid, scaled linearly
+  // by tile count (the ladder holds tile resolution ∝ quality, not grid size).
+  const raw = (1.5 + 8.6 * q) * (tiles / 27) * (c.animated.format === 'gif' ? 1.8 : 1);
+  return Math.max(0.1, Math.min(raw, c.animated.targetMb));
 }
 
-/// Single-cell montage loop estimate (~6 sequential clips).
+/// Single-cell montage loop estimate (~6 sequential clips). Also target-gated,
+/// though a single cell rarely reaches it.
 export function estimateMontageMB(job) {
   const c = job.config;
   const q = c.animated.quality / 100;
-  return (c.animated.format === 'gif' ? 1.8 : 1) * (0.3 + q * 0.9);
+  const raw = (0.3 + q * 0.9) * (c.animated.format === 'gif' ? 1.8 : 1);
+  return Math.max(0.05, Math.min(raw, c.animated.targetMb));
 }
 
-/// Static sheet estimate (per prototype: tiles × factor, PNG fixed).
+/// Static sheet estimate — one composed image, so cost is per-tile detail by
+/// format. PNG is lossless (quality-independent); JPEG/WebP scale with quality,
+/// and WebP is markedly smaller than JPEG at the same setting.
 export function estimateStaticMB(job) {
   const c = job.config;
-  const effTiles = c.grid.cols * c.grid.rows;
-  const isPng = c.static.format === 'png';
-  const factor = isPng ? 1 : 0.15 + (c.static.quality / 100) * 0.8;
-  return Math.max(0.3, effTiles * 0.14 * factor);
+  const tiles = c.grid.cols * c.grid.rows;
+  const q = c.static.quality / 100;
+  const perTile =
+    c.static.format === 'png'
+      ? 0.043 // lossless — flat
+      : c.static.format === 'webp'
+        ? 0.006 + 0.01 * q
+        : 0.018 + 0.022 * q; // jpeg
+  return Math.max(0.05, tiles * perTile);
 }
 
 const EXT = { png: 'png', jpeg: 'jpg', webp: 'webp', gif: 'gif' };

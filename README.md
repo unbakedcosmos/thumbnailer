@@ -8,9 +8,10 @@ kept locally, not committed).
 ## What it does
 
 Drop a folder on the window (or **+ Add folder** / **+ Add files**). Every video
-becomes a queue row. Grid (3×9 default) and orientation (Auto reads each source's
-aspect and fits without cropping) are shared; beyond that the two outputs have
-their own panels:
+becomes a queue row. Each file picks a single **output type** (Static / Animated /
+Montage); grid (3×9 default) and orientation (Auto reads each source's aspect and
+fits without cropping) are shared, and the panel below shows just the selected
+type's controls:
 
 - **Static image** — file type (PNG / JPEG / WebP), compression quality
   (hidden for lossless PNG), post-process **sharpen**, and a **frame**: sheet
@@ -34,9 +35,11 @@ file-type choices):
 - `<basename>_montage.{webp|gif}` — single-cell loop of ~6 sequential clips
 
 Templates are user data in `templates.json` next to the app settings — they persist
-across sessions and batches. Close or crash mid-batch and the manifest restores
-completed work on relaunch ("Resumed — N left"); re-runs are idempotent unless
-Overwrite is on, and switching formats cleans up stale same-kind siblings.
+across sessions and batches. Close or crash with work still queued and the manifest
+restores the unfinished files on relaunch ("Resumed — N left") — a batch that
+finished reopens clean. With **Overwrite** off, a re-run preserves the existing file
+and writes a numbered copy (`_contact (1).png`, `(2)`, …); with Overwrite on it
+replaces in place and sweeps stale same-kind siblings on a format switch.
 
 ## Keyboard
 

@@ -217,31 +217,34 @@ impl Engine {
         }
     }
 
-    /// Restore the persisted queue after a crash/close (FR6). Jobs that were
-    /// mid-flight come back as queued; completed work is not redone.
+    /// Restore the persisted queue after a crash/close (FR6). Only genuinely
+    /// unfinished work is brought back: jobs that were mid-flight come back as
+    /// queued, and completed work is never redone. A batch that already
+    /// finished (nothing left to run) is NOT restored — the app opens fresh and
+    /// the stale manifest is cleared, so a clean close means a clean start.
     pub fn load_manifest(self: &Arc<Self>) -> Option<BatchView> {
         let bytes = std::fs::read(self.manifest_path()).ok()?;
-        let m: Manifest = serde_json::from_slice(&bytes).ok()?;
-        if m.jobs.is_empty() {
-            return None;
-        }
-        let mut st = self.state.lock().unwrap();
-        st.jobs = m.jobs;
-        let mut max_id = 0;
-        for j in st.jobs.iter_mut() {
+        let mut m: Manifest = serde_json::from_slice(&bytes).ok()?;
+
+        // Mid-flight jobs from a crash resume as queued.
+        for j in m.jobs.iter_mut() {
             if j.status == JobStatus::Running {
                 j.status = JobStatus::Queued;
                 j.pct = 0.0;
             }
-            max_id = max_id.max(j.id);
         }
+        // Fresh start unless there is actual work left to run.
+        let pending = m.jobs.iter().any(|j| j.status == JobStatus::Queued);
+        if !pending {
+            let _ = std::fs::remove_file(self.manifest_path());
+            return None;
+        }
+
+        let mut st = self.state.lock().unwrap();
+        st.jobs = m.jobs;
+        let max_id = st.jobs.iter().map(|j| j.id).max().unwrap_or(0);
         self.next_id.store(max_id + 1, Ordering::SeqCst);
-        let pending = st.jobs.iter().any(|j| j.status == JobStatus::Queued);
-        st.batch = if pending {
-            BatchStatus::Paused
-        } else {
-            BatchStatus::Complete
-        };
+        st.batch = BatchStatus::Paused;
         let view = Self::batch_view(&st);
         self.emit_queue(&st);
         self.emit_batch(&st);
@@ -438,9 +441,10 @@ impl Engine {
             self.emit_batch(&st);
         }
         let me = self.clone();
-        // Always overwrite on an explicit per-file Generate — the user asked
-        // for this exact file to be re-made.
-        tokio::spawn(async move { me.run_one(id, true).await });
+        // Per-file Generate honors the same overwrite policy as the batch: ON
+        // replaces the file, OFF preserves it and writes a numbered copy.
+        let overwrite = self.settings.lock().unwrap().overwrite;
+        tokio::spawn(async move { me.run_one(id, overwrite).await });
     }
 
     fn ensure_scheduler(self: &Arc<Self>) {

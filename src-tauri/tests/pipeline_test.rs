@@ -158,16 +158,32 @@ async fn static_formats_and_frame_toggle() {
     let jpg_path = PathBuf::from(&out_jpg.artifacts[0].path);
     assert!(jpg_path.to_string_lossy().ends_with("_contact.jpg"));
 
-    // Switching to WebP replaces the jpg (stale-sibling cleanup) — overwrite
-    // not needed because the webp doesn't exist yet
+    // Switching to WebP with overwrite OFF preserves everything: the webp is
+    // written (its name is free) and the prior jpg is left untouched — Off never
+    // deletes existing artifacts.
     config.static_cfg.format = StaticFormat::Webp;
     let (_, out_webp) = run_job(&video, &config, &classic(), &fonts, &ctl())
         .await
         .unwrap();
     assert!(out_webp.artifacts[0].path.ends_with("_contact.webp"));
     assert!(
+        jpg_path.exists(),
+        "overwrite-off preserves the prior format"
+    );
+
+    // With overwrite ON, a format switch sweeps the stale sibling so only the
+    // current format remains.
+    let ctl_ow0 = GenControl {
+        cancel: CancellationToken::new(),
+        overwrite: true,
+        progress: Box::new(|_| {}),
+    };
+    let (_, _) = run_job(&video, &config, &classic(), &fonts, &ctl_ow0)
+        .await
+        .unwrap();
+    assert!(
         !jpg_path.exists(),
-        "stale jpg sibling removed on format switch"
+        "stale jpg sibling removed on overwrite format switch"
     );
 
     // Frame off = raw grab: grid only, no header band → shorter than framed.
@@ -240,7 +256,7 @@ async fn truncated_file_fails_as_unreadable() {
 }
 
 #[tokio::test]
-async fn rerun_is_idempotent_until_overwrite() {
+async fn rerun_appends_numbered_copy_unless_overwrite() {
     let tmp = tempfile::tempdir().unwrap();
     let video = make_video(tmp.path(), "Quick Clip [5589801].mp4", 640, 360, 6.0);
     let fonts = Fonts::load();
@@ -256,29 +272,50 @@ async fn rerun_is_idempotent_until_overwrite() {
         .unwrap();
     assert_eq!(first.artifacts.len(), 1);
     let produced = PathBuf::from(&first.artifacts[0].path);
+    assert!(produced.to_string_lossy().ends_with("_contact.png"));
     let mtime1 = std::fs::metadata(&produced).unwrap().modified().unwrap();
 
-    // Second run without overwrite: skipped, artifact untouched (FR24)
+    // Second run without overwrite: the original is preserved untouched and a
+    // numbered copy is written alongside it (append mode, not skip/clobber).
     let (_, second) = run_job(&video, &config, &classic(), &fonts, &ctl())
         .await
         .unwrap();
-    assert!(second.artifacts.is_empty());
-    assert_eq!(second.skipped_existing, vec![ArtifactKind::Static]);
+    assert_eq!(second.artifacts.len(), 1);
+    assert!(second.skipped_existing.is_empty());
+    let copy = PathBuf::from(&second.artifacts[0].path);
+    assert!(
+        copy.to_string_lossy().ends_with("_contact (1).png"),
+        "expected numbered copy, got {}",
+        copy.display()
+    );
+    assert!(copy.exists() && copy != produced);
+    // Original bytes and mtime unchanged.
     assert_eq!(
         std::fs::metadata(&produced).unwrap().modified().unwrap(),
         mtime1
     );
 
-    // With overwrite: regenerated
+    // A third no-overwrite run appends the next number.
+    let (_, third) = run_job(&video, &config, &classic(), &fonts, &ctl())
+        .await
+        .unwrap();
+    assert!(PathBuf::from(&third.artifacts[0].path)
+        .to_string_lossy()
+        .ends_with("_contact (2).png"));
+
+    // With overwrite: the canonical file is replaced in place (no new copy).
     let ctl_ow = GenControl {
         cancel: CancellationToken::new(),
         overwrite: true,
         progress: Box::new(|_| {}),
     };
-    let (_, third) = run_job(&video, &config, &classic(), &fonts, &ctl_ow)
+    let (_, fourth) = run_job(&video, &config, &classic(), &fonts, &ctl_ow)
         .await
         .unwrap();
-    assert_eq!(third.artifacts.len(), 1);
+    assert_eq!(fourth.artifacts.len(), 1);
+    assert!(PathBuf::from(&fourth.artifacts[0].path)
+        .to_string_lossy()
+        .ends_with("_contact.png"));
 }
 
 #[tokio::test]
@@ -363,11 +400,48 @@ async fn batch_engine_isolates_failures_and_completes() {
     let failed = jobs.iter().find(|j| j.status == JobStatus::Failed).unwrap();
     assert!(failed.fail_reason.is_some(), "zero silent skips (SM2)");
 
-    // Manifest persisted → a fresh engine resumes state (FR6)
+    // A fully-finished batch (nothing left to run) is NOT resumed — the app
+    // opens fresh and the stale manifest is cleared, so a clean close means a
+    // clean start rather than re-showing last session's results.
     let engine2 = Engine::new(Arc::new(|_, _| {}), data.path().to_path_buf());
-    let restored = engine2.load_manifest().expect("manifest restores");
-    assert_eq!(restored.done, 2);
-    assert_eq!(restored.failed, 1);
+    assert!(
+        engine2.load_manifest().is_none(),
+        "completed batch starts fresh, not resumed"
+    );
+    assert!(
+        !data.path().join("manifest.json").exists(),
+        "stale manifest cleared on fresh start"
+    );
+    let (jobs2, _) = engine2.jobs_snapshot();
+    assert!(
+        jobs2.is_empty(),
+        "fresh engine has no jobs after clean close"
+    );
+}
+
+/// Crash-resume (FR6): a batch with genuinely unfinished work IS restored, with
+/// mid-flight jobs reset to queued and the batch left paused for the user.
+#[tokio::test]
+async fn manifest_resumes_unfinished_work() {
+    let tmp = tempfile::tempdir().unwrap();
+    make_video(tmp.path(), "Backstage Vert [5588204].mp4", 320, 240, 2.0);
+    make_video(tmp.path(), "Chair Play [5587459].mp4", 320, 240, 2.0);
+    let data = tempfile::tempdir().unwrap();
+
+    // add_paths persists a manifest with queued jobs (no encoding needed).
+    let engine = Engine::new(Arc::new(|_, _| {}), data.path().to_path_buf());
+    assert_eq!(engine.add_paths(vec![tmp.path().to_path_buf()]), 2);
+
+    // A fresh engine over the same data dir brings the queued work back.
+    let engine2 = Engine::new(Arc::new(|_, _| {}), data.path().to_path_buf());
+    let restored = engine2
+        .load_manifest()
+        .expect("unfinished work is restored");
+    assert_eq!(restored.total, 2);
+    assert_eq!(restored.status, BatchStatus::Paused, "resumes paused (FR6)");
+    let (jobs2, _) = engine2.jobs_snapshot();
+    assert_eq!(jobs2.len(), 2);
+    assert!(jobs2.iter().all(|j| j.status == JobStatus::Queued));
 }
 
 #[tokio::test]

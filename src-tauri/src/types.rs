@@ -39,9 +39,12 @@ pub struct ArtifactSet {
 
 impl Default for ArtifactSet {
     fn default() -> Self {
+        // A file produces exactly one output type (chosen in the editor); the
+        // static contact sheet is the default. The set stays a struct so the
+        // pipeline is unchanged — the UI just keeps a single member on.
         ArtifactSet {
             static_sheet: true,
-            animated: true,
+            animated: false,
             montage: false,
         }
     }
