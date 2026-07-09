@@ -8,6 +8,7 @@
   import SettingsModal from '$lib/SettingsModal.svelte';
   import TemplateGallery from '$lib/TemplateGallery.svelte';
   import TemplateEditor from '$lib/TemplateEditor.svelte';
+  import FfmpegPrompt from '$lib/FfmpegPrompt.svelte';
 
   onMount(() => {
     init();
@@ -66,6 +67,9 @@
     <TemplateGallery />
   {/if}
   <TemplateEditor />
+  {#if app.ffmpegReady === false && !app.ffmpegPromptDismissed}
+    <FfmpegPrompt />
+  {/if}
 </div>
 
 <style>

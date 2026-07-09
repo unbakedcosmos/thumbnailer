@@ -99,9 +99,28 @@ pub async fn set_settings(engine: Eng<'_>, settings: Settings) -> Result<(), Str
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FfmpegStatus {
+    /// ffmpeg version string, or null if ffmpeg couldn't be run.
+    pub version: Option<String>,
+    /// True only when BOTH ffmpeg and ffprobe are usable — the app needs both.
+    pub ready: bool,
+    /// Writable folder the user can drop ffmpeg/ffprobe into (for the prompt).
+    pub bin_dir: Option<String>,
+}
+
+/// Re-probed on demand (discovery is uncached) so a dropped binary is seen live.
 #[tauri::command]
-pub async fn ffmpeg_version() -> Result<Option<String>, String> {
-    Ok(crate::ffmpeg::ffmpeg_version().await)
+pub async fn ffmpeg_status() -> Result<FfmpegStatus, String> {
+    let version = crate::ffmpeg::ffmpeg_version().await;
+    let ready = version.is_some() && crate::ffmpeg::ffprobe_ok().await;
+    let bin_dir = crate::ffmpeg::bin_dir().map(|p| p.to_string_lossy().into_owned());
+    Ok(FfmpegStatus {
+        version,
+        ready,
+        bin_dir,
+    })
 }
 
 // Frame templates are user data (CHANGELOG §2): persisted in templates.json,

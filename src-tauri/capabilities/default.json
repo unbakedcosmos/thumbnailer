@@ -3,5 +3,11 @@
   "identifier": "default",
   "description": "Main window capabilities",
   "windows": ["main"],
-  "permissions": ["core:default", "core:window:allow-set-title", "dialog:default"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-title",
+    "dialog:default",
+    "opener:allow-open-url",
+    "opener:allow-reveal-item-in-dir"
+  ]
 }

@@ -3,6 +3,17 @@
 All notable changes to Thumbnailer. Versions are the git tags that trigger a
 release build; hyphenated tags (e.g. `v0.3.0-beta`) publish as prereleases.
 
+## v0.3.2-beta
+
+### Added
+
+- **ffmpeg auto-detect + guided prompt.** On startup the app checks for ffmpeg and
+  ffprobe; if either is missing it shows a prompt explaining how to install one, a
+  button to open the official download page, and a writable `<app-data>/binaries/`
+  folder to drop a static build into — then **Re-check** picks it up live (no
+  restart). Discovery is re-evaluated per call: `<app-data>/binaries` →
+  `<exe-dir>/binaries` → `<exe-dir>` → PATH.
+
 ## v0.3.1-beta
 
 ### Changed

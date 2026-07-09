@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { open } from '@tauri-apps/plugin-dialog';
+import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
 
 export const GRID_PRESETS = [
   { label: '3×9', cols: 3, rows: 9 },
@@ -50,6 +51,10 @@ export const app = $state({
   queueFilter: 'all', // 'all' | 'issues'
   resumedNote: null,
   ffmpegVersion: null,
+  ffmpegReady: null, // null = still checking; true/false once probed
+  ffmpegBinDir: null,
+  ffmpegChecking: false,
+  ffmpegPromptDismissed: false,
   settings: { concurrency: 2, preset: 'Balanced', overwrite: false, defaultTargetMb: 8 },
   templates: [],
   templateGalleryOpen: false,
@@ -100,7 +105,7 @@ export async function init() {
 
   app.settings = await invoke('get_settings');
   app.templates = await invoke('list_templates');
-  invoke('ffmpeg_version').then((v) => (app.ffmpegVersion = v));
+  recheckFfmpeg();
 
   // Crash/close resume (PRD FR6): restore instead of restarting.
   const restored = await invoke('load_persisted');
@@ -191,6 +196,30 @@ export const stopBatch = () => invoke('stop_batch');
 
 export function saveSettings() {
   invoke('set_settings', { settings: $state.snapshot(app.settings) });
+}
+
+// ------------------------------------------------------------ ffmpeg detection
+
+/// Re-probe ffmpeg/ffprobe (discovery is uncached, so a just-dropped binary is
+/// picked up live). Drives the guided "ffmpeg not found" prompt.
+export async function recheckFfmpeg() {
+  app.ffmpegChecking = true;
+  try {
+    const s = await invoke('ffmpeg_status');
+    app.ffmpegVersion = s.version;
+    app.ffmpegReady = s.ready;
+    app.ffmpegBinDir = s.binDir;
+  } finally {
+    app.ffmpegChecking = false;
+  }
+}
+
+export function openFfmpegDownload() {
+  return openUrl('https://ffmpeg.org/download.html');
+}
+
+export async function openFfmpegFolder() {
+  if (app.ffmpegBinDir) await revealItemInDir(app.ffmpegBinDir);
 }
 
 // ------------------------------------------------------------ templates

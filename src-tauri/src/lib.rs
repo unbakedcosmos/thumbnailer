@@ -17,6 +17,7 @@ use tauri::{Emitter as _, Manager};
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let handle = app.handle().clone();
             let emitter: queue::Emitter = Arc::new(move |event, payload| {
@@ -26,6 +27,8 @@ pub fn run() {
                 .path()
                 .app_data_dir()
                 .unwrap_or_else(|_| std::env::temp_dir().join("thumbnailer"));
+            // Where the guided prompt drops a user-supplied ffmpeg/ffprobe.
+            ffmpeg::set_bundle_dir(data_dir.join("binaries"));
             let engine = Engine::new(emitter, data_dir);
             // Dev/test hook: pre-load paths without the native folder dialog
             // (used by headless UI verification; harmless in production).
@@ -55,7 +58,7 @@ pub fn run() {
             commands::apply_config_all,
             commands::get_settings,
             commands::set_settings,
-            commands::ffmpeg_version,
+            commands::ffmpeg_status,
             commands::list_templates,
             commands::save_template,
             commands::delete_template,

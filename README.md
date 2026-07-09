@@ -48,16 +48,16 @@ follow-running · Esc close modals.
 
 ## Build & run
 
-Prereqs: Rust (stable), Node 20+, ffmpeg + ffprobe on PATH (or drop static builds
-in a `binaries/` dir next to the executable — that's the bundling seam; the build
-must include `libwebp_anim` for probing only; animated encoding itself is done
-in-process via libwebp).
+Prereqs: Rust (stable), Node 20+, and **ffmpeg + ffprobe** (on PATH for dev). The
+app doesn't bundle ffmpeg — it auto-detects it at runtime and, if missing, shows a
+guided prompt to install it or drop a static build into a writable app-data folder
+(`<app-data>/binaries/`), then re-checks live.
 
 ```sh
 npm install
-npm run tauri dev      # develop
-npm run tauri build    # package (deb/appimage on Linux, nsis on Windows)
-cd src-tauri && cargo test   # pipeline + engine integration tests (needs ffmpeg)
+npm run tauri dev                # develop
+npm run tauri build              # package (deb/appimage on Linux, nsis on Windows)
+cd src-tauri && cargo test       # pipeline + engine integration tests (needs ffmpeg on PATH)
 ```
 
 v1 targets Windows per the PRD; the codebase is cross-platform and is developed
