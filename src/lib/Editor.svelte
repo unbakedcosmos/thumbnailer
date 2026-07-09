@@ -4,6 +4,7 @@
     GRID_PRESETS,
     selectedJob,
     syncJobConfig,
+    syncJobConfigLocal,
     generateSelected,
     applyConfigToBatch,
     estimateAnimatedMB,
@@ -63,12 +64,20 @@
 
   // Output type is single-select. Coerce any legacy config that has more than
   // one artifact on (e.g. a manifest from before this UI) down to its priority
-  // pick, so the backend produces exactly what the editor shows.
+  // pick — locally, so opening such a file doesn't fan the change out to the
+  // whole batch under apply-to-all.
   $effect(() => {
     if (!job) return;
     const a = job.config.artifacts;
     const on = [a.staticSheet, a.animated, a.montage].filter(Boolean).length;
-    if (on !== 1) setArtifact(outputType);
+    if (on !== 1) {
+      job.config.artifacts = {
+        staticSheet: outputType === 'staticSheet',
+        animated: outputType === 'animated',
+        montage: outputType === 'montage'
+      };
+      syncJobConfigLocal(job);
+    }
   });
 
   // Preview renders a capped sample (≤3 rows), not the literal tile count
@@ -132,6 +141,11 @@
   function setOutputMode(m) {
     job.config.outputMode = m;
     syncJobConfig(job);
+  }
+  function toggleApplyAll() {
+    app.applyToAll = !app.applyToAll;
+    // Turning it on immediately brings every file in line with this one.
+    if (app.applyToAll) applyConfigToBatch();
   }
 
   // Sliders: click-to-jump + drag
@@ -210,18 +224,46 @@
       </div>
     {/if}
 
-    <div class="field artifacts-row">
-      <span class="label">Output type</span>
-      <div class="seg-group" role="radiogroup" aria-label="Output type">
-        {#each artifactDefs as a (a.key)}
+    <div class="controls">
+      <div class="field">
+        <span class="label">Output type</span>
+        <div class="seg-group" role="radiogroup" aria-label="Output type">
+          {#each artifactDefs as a (a.key)}
+            <button
+              class="seg"
+              class:active={outputType === a.key}
+              role="radio"
+              aria-checked={outputType === a.key}
+              onclick={() => setArtifact(a.key)}>{a.label}</button
+            >
+          {/each}
+        </div>
+      </div>
+      <div class="field">
+        <span class="label">Output folder</span>
+        <div class="seg-group">
           <button
             class="seg"
-            class:active={outputType === a.key}
-            role="radio"
-            aria-checked={outputType === a.key}
-            onclick={() => setArtifact(a.key)}>{a.label}</button
+            class:active={job.config.outputMode === 'source'}
+            onclick={() => setOutputMode('source')}>Same as source</button
           >
-        {/each}
+          <button
+            class="seg"
+            class:active={job.config.outputMode === 'custom'}
+            onclick={() => setOutputMode('custom')}>Custom folder</button
+          >
+        </div>
+        {#if job.config.outputMode === 'custom'}
+          <input
+            spellcheck="false"
+            placeholder="Folder path"
+            value={job.config.outputPath ?? ''}
+            onchange={(e) => {
+              job.config.outputPath = e.currentTarget.value;
+              syncJobConfig(job);
+            }}
+          />
+        {/if}
       </div>
     </div>
 
@@ -406,33 +448,6 @@
       </div>
     {/if}
 
-    <div class="field output-field">
-      <span class="label">Output folder</span>
-      <div class="seg-group">
-        <button
-          class="seg"
-          class:active={job.config.outputMode === 'source'}
-          onclick={() => setOutputMode('source')}>Same as source</button
-        >
-        <button
-          class="seg"
-          class:active={job.config.outputMode === 'custom'}
-          onclick={() => setOutputMode('custom')}>Custom folder</button
-        >
-      </div>
-      {#if job.config.outputMode === 'custom'}
-        <input
-          spellcheck="false"
-          placeholder="Folder path"
-          value={job.config.outputPath ?? ''}
-          onchange={(e) => {
-            job.config.outputPath = e.currentTarget.value;
-            syncJobConfig(job);
-          }}
-        />
-      {/if}
-    </div>
-
     <div class="filerow">
       <span class="filename">{job.name}</span>
       <span class="pill">{orientLabel}</span>
@@ -456,97 +471,99 @@
       </div>
     </div>
 
-    {#if showStaticPanel}
-      <div class="preview-head"><span class="label">Static sheet preview</span></div>
-      <div
-        class="preview"
-        style:border={frameOn && tpl
-          ? borderFor(tpl.border, tpl.accent)
-          : '1px solid var(--border)'}
-      >
-        {#if frameOn && tpl?.headerBand}
-          <div class="band" style:color={accentColor(tpl.accent === 'none' ? 'dim' : tpl.accent)}>
-            <span class="band-name">{job.name}</span>
-            <span
-              >{job.meta ? fmtDuration(job.meta.durationS) : '—'} · {job.meta
-                ? `${job.meta.width}×${job.meta.height}`
-                : '—'}</span
-            >
-          </div>
-        {/if}
-        <div class="pgrid" style:grid-template-columns="repeat({previewCols}, 1fr)">
-          {#each Array(previewShown), i (i)}
-            <div class="tile" style:aspect-ratio={isPortrait ? '9/16' : '16/9'}>
-              {#if frameOn && tpl && tpl.timestampStyle !== 'none'}
-                {#if tpl.timestampStyle === 'overlay'}
-                  <span
-                    class="ts overlay"
-                    style:background={accentColor(tpl.accent === 'none' ? 'mint' : tpl.accent)}
-                    >{previewTs(i)}</span
-                  >
-                {:else}
-                  <span class="ts corner">{previewTs(i)}</span>
-                {/if}
-              {/if}
-            </div>
-          {/each}
-        </div>
-      </div>
-      <div class="caption">
-        <span class="dim"
-          >preview · {previewShown} of {previewTotal} tiles shown · {frameOn && tpl
-            ? `${tpl.name} frame`
-            : 'no frame · raw grab'} · not final encode</span
-        >
-        <span class="est">{staticEst.toFixed(1)} MB est.</span>
-      </div>
-    {/if}
-
-    {#if job.config.artifacts.animated}
-      <!-- The animated artifact IS a tiled grid — preview it as one -->
-      <div class="preview-head"><span class="label">Animated grid preview</span></div>
-      <div class="preview">
-        <div class="pgrid" style:grid-template-columns="repeat({previewCols}, 1fr)">
-          {#each Array(previewShown), i (i)}
-            <div class="tile play-tile" style:aspect-ratio={isPortrait ? '9/16' : '16/9'}>
-              <span class="play">▶</span>
-            </div>
-          {/each}
-        </div>
-      </div>
-      <div class="caption">
-        <span class="dim"
-          >every tile loops · {previewShown} of {previewTotal} tiles shown · not final encode</span
-        >
-        <span class="est" class:capped={animGated}
-          >{animGated
-            ? `≤ ${job.config.animated.targetMb} MB · size-capped`
-            : `${animEst.toFixed(1)} MB est. · target ${job.config.animated.targetMb} MB`}</span
-        >
-      </div>
-    {/if}
-
-    {#if job.config.artifacts.montage}
-      <!-- Montage: one cell playing sequential clips — a single box -->
-      <div class="preview-head"><span class="label">Montage loop</span></div>
-      <div class="preview loop-well">
+    <div class="preview-region">
+      {#if showStaticPanel}
+        <div class="preview-head"><span class="label">Static sheet preview</span></div>
         <div
-          class="tile play-tile montage-cell"
-          style:aspect-ratio={isPortrait ? '9/16' : '16/9'}
-          style:width={isPortrait ? '120px' : '220px'}
+          class="preview"
+          style:border={frameOn && tpl
+            ? borderFor(tpl.border, tpl.accent)
+            : '1px solid var(--border)'}
         >
-          <span class="play">▶</span>
+          {#if frameOn && tpl?.headerBand}
+            <div class="band" style:color={accentColor(tpl.accent === 'none' ? 'dim' : tpl.accent)}>
+              <span class="band-name">{job.name}</span>
+              <span
+                >{job.meta ? fmtDuration(job.meta.durationS) : '—'} · {job.meta
+                  ? `${job.meta.width}×${job.meta.height}`
+                  : '—'}</span
+              >
+            </div>
+          {/if}
+          <div class="pgrid" style:grid-template-columns="repeat({previewCols}, 1fr)">
+            {#each Array(previewShown), i (i)}
+              <div class="tile" style:aspect-ratio={isPortrait ? '9/16' : '16/9'}>
+                {#if frameOn && tpl && tpl.timestampStyle !== 'none'}
+                  {#if tpl.timestampStyle === 'overlay'}
+                    <span
+                      class="ts overlay"
+                      style:background={accentColor(tpl.accent === 'none' ? 'mint' : tpl.accent)}
+                      >{previewTs(i)}</span
+                    >
+                  {:else}
+                    <span class="ts corner">{previewTs(i)}</span>
+                  {/if}
+                {/if}
+              </div>
+            {/each}
+          </div>
         </div>
-      </div>
-      <div class="caption">
-        <span class="dim">one cell · 6 sequential clips · not final encode</span>
-        <span class="est" class:capped={montGated}
-          >{montGated
-            ? `≤ ${job.config.animated.targetMb} MB · size-capped`
-            : `${montageEst.toFixed(1)} MB est. · target ${job.config.animated.targetMb} MB`}</span
-        >
-      </div>
-    {/if}
+        <div class="caption">
+          <span class="dim"
+            >preview · {previewShown} of {previewTotal} tiles shown · {frameOn && tpl
+              ? `${tpl.name} frame`
+              : 'no frame · raw grab'} · not final encode</span
+          >
+          <span class="est">{staticEst.toFixed(1)} MB est.</span>
+        </div>
+      {/if}
+
+      {#if job.config.artifacts.animated}
+        <!-- The animated artifact IS a tiled grid — preview it as one -->
+        <div class="preview-head"><span class="label">Animated grid preview</span></div>
+        <div class="preview">
+          <div class="pgrid" style:grid-template-columns="repeat({previewCols}, 1fr)">
+            {#each Array(previewShown), i (i)}
+              <div class="tile play-tile" style:aspect-ratio={isPortrait ? '9/16' : '16/9'}>
+                <span class="play">▶</span>
+              </div>
+            {/each}
+          </div>
+        </div>
+        <div class="caption">
+          <span class="dim"
+            >every tile loops · {previewShown} of {previewTotal} tiles shown · not final encode</span
+          >
+          <span class="est" class:capped={animGated}
+            >{animGated
+              ? `≤ ${job.config.animated.targetMb} MB · size-capped`
+              : `${animEst.toFixed(1)} MB est. · target ${job.config.animated.targetMb} MB`}</span
+          >
+        </div>
+      {/if}
+
+      {#if job.config.artifacts.montage}
+        <!-- Montage: one cell playing sequential clips — a single box -->
+        <div class="preview-head"><span class="label">Montage loop</span></div>
+        <div class="preview loop-well">
+          <div
+            class="tile play-tile montage-cell"
+            style:aspect-ratio={isPortrait ? '9/16' : '16/9'}
+            style:width={isPortrait ? '120px' : '220px'}
+          >
+            <span class="play">▶</span>
+          </div>
+        </div>
+        <div class="caption">
+          <span class="dim">one cell · 6 sequential clips · not final encode</span>
+          <span class="est" class:capped={montGated}
+            >{montGated
+              ? `≤ ${job.config.animated.targetMb} MB · size-capped`
+              : `${montageEst.toFixed(1)} MB est. · target ${job.config.animated.targetMb} MB`}</span
+          >
+        </div>
+      {/if}
+    </div>
 
     {#if job.status === 'done' && job.artifacts?.length}
       <div class="artifacts">
@@ -563,7 +580,17 @@
       <button class="btn-primary" onclick={generateSelected} disabled={job.status === 'running'}>
         {job.status === 'running' ? `Encoding ${Math.round(job.pct)}%` : 'Generate this file'}
       </button>
-      <button class="btn-ghost" onclick={applyConfigToBatch}>Apply config to batch</button>
+      <button
+        class="chip"
+        class:on={app.applyToAll}
+        onclick={toggleApplyAll}
+        title="When on, editing any setting updates every file in the queue"
+      >
+        <span class="sq" class:on={app.applyToAll}></span>Apply to all files
+      </button>
+      {#if !app.applyToAll}
+        <button class="btn-ghost" onclick={applyConfigToBatch}>Apply config once</button>
+      {/if}
       <span class="writes">→ writes to {writesTo(job)} · {outputFilesNote(job)}</span>
     </div>
   </section>
@@ -605,9 +632,6 @@
     border: 1px solid var(--danger);
     background: transparent;
     color: var(--danger);
-  }
-  .artifacts-row {
-    margin-bottom: 16px;
   }
   .controls {
     display: grid;
@@ -734,9 +758,6 @@
     padding: 7px 10px;
     width: 100%;
   }
-  .output-field {
-    margin-bottom: 22px;
-  }
   .filerow {
     font-size: 15px;
     font-weight: 700;
@@ -771,8 +792,15 @@
     font-weight: 700;
     color: var(--accent);
   }
+  .preview-region {
+    background: #0d0e11;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 22px;
+  }
   .preview-head {
-    margin-bottom: 6px;
+    margin-bottom: 10px;
   }
   .preview {
     background: var(--card);
@@ -844,7 +872,7 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin: 6px 2px 20px;
+    margin: 6px 2px 0;
     font-size: 12px;
     gap: 12px;
   }

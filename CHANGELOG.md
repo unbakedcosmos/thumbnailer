@@ -3,6 +3,20 @@
 All notable changes to Thumbnailer. Versions are the git tags that trigger a
 release build; hyphenated tags (e.g. `v0.3.0-beta`) publish as prereleases.
 
+## v0.3.1-beta
+
+### Changed
+
+- **Editor layout matches the r3 handoff.** Output folder moved up to share the
+  top row with Output type; Grid/Orientation sit in the row below.
+- **Config applies to all files by default.** An "Apply to all files" toggle
+  (on by default) in the editor propagates every setting change across the whole
+  queue; turn it off to tweak a single file (the old "Apply config to batch"
+  becomes a one-shot "Apply config once").
+- **Preview region box.** The preview now sits inside an outer container
+  (`#0d0e11`, 8px radius) so it reads as a distinct block regardless of the
+  chosen sheet frame — separating the UI divider from the artifact's own frame.
+
 ## v0.3.0-beta
 
 ### Added

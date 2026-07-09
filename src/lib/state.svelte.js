@@ -46,6 +46,7 @@ export const app = $state({
   selectedId: null,
   settingsOpen: false,
   follow: true,
+  applyToAll: true, // editor edits propagate to every queued file by default
   queueFilter: 'all', // 'all' | 'issues'
   resumedNote: null,
   ffmpegVersion: null,
@@ -146,6 +147,20 @@ export async function pickFiles() {
 }
 
 export function syncJobConfig(job) {
+  const cfg = $state.snapshot(job.config);
+  if (app.applyToAll) {
+    // Apply-to-all default: push the edited config onto every other queued file.
+    for (const j of app.jobs) if (j.id !== job.id) j.config = structuredClone(cfg);
+    invoke('apply_config_all', { config: cfg });
+  } else {
+    invoke('set_job_config', { id: job.id, config: cfg });
+  }
+}
+
+// Persist one job's config only — never fans out to the batch. Used for silent
+// normalization (e.g. coercing a legacy multi-artifact config to single-select)
+// where touching other files would be surprising.
+export function syncJobConfigLocal(job) {
   invoke('set_job_config', { id: job.id, config: $state.snapshot(job.config) });
 }
 
