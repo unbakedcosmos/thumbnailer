@@ -8,7 +8,7 @@ on:
 jobs:
   check:
     # Self-hosted Forgejo runner (labels: ci-amd64, ubuntu-latest, …)
-    runs-on: ci-amd64
+    runs-on: rust-tauri
     steps:
       - uses: actions/checkout@v4
 

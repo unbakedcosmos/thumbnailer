@@ -6,7 +6,7 @@ on:
 
 jobs:
   build-release:
-    runs-on: ci-amd64
+    runs-on: rust-tauri
     steps:
       - uses: actions/checkout@v4
 
