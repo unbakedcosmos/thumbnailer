@@ -58,6 +58,51 @@ pub enum OutputMode {
     Custom,
 }
 
+/// Encoder effort — trades encode time for quality/size. A global setting.
+/// Drives WebP method + sharp-YUV, JPEG progressive, and how many candidate
+/// frames the static sheet scans to pick the sharpest. Fast ≈ the pre-quality-
+/// pass behaviour; Quality is the slow, best path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Effort {
+    Fast,
+    #[default]
+    Balanced,
+    Quality,
+}
+
+impl Effort {
+    /// Candidate frames scanned per still tile to pick the sharpest (1 = just
+    /// grab the frame at the timestamp).
+    pub fn sharp_candidates(self) -> usize {
+        match self {
+            Effort::Fast => 1,
+            Effort::Balanced => 3,
+            Effort::Quality => 5,
+        }
+    }
+    /// libwebp method (0–6): higher = slower but smaller/better.
+    pub fn webp_method(self) -> i32 {
+        match self {
+            Effort::Fast => 3,
+            Effort::Balanced => 4,
+            Effort::Quality => 6,
+        }
+    }
+    /// Same, typed for webp-animation's `usize` method field.
+    pub fn webp_anim_method(self) -> usize {
+        self.webp_method() as usize
+    }
+    /// Sharper (slower) RGB→YUV conversion — off on Fast.
+    pub fn sharp_yuv(self) -> bool {
+        !matches!(self, Effort::Fast)
+    }
+    /// Progressive JPEG (smaller, a little slower) — off on Fast.
+    pub fn jpeg_progressive(self) -> bool {
+        !matches!(self, Effort::Fast)
+    }
+}
+
 /// Static / montage image format (CHANGELOG §1: File type PNG / JPEG / WebP).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]

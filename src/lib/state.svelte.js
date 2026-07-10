@@ -55,7 +55,13 @@ export const app = $state({
   ffmpegBinDir: null,
   ffmpegChecking: false,
   ffmpegPromptDismissed: false,
-  settings: { concurrency: 2, preset: 'Balanced', overwrite: false, defaultTargetMb: 8 },
+  settings: {
+    concurrency: 2,
+    preset: 'Balanced',
+    overwrite: false,
+    defaultTargetMb: 8,
+    effort: 'balanced'
+  },
   templates: [],
   templateGalleryOpen: false,
   templateEditor: null // { id, name, headerBand, border, timestampStyle, accent, isNew }
@@ -352,10 +358,10 @@ export function estimateStaticMB(job) {
   const q = c.static.quality / 100;
   const perTile =
     c.static.format === 'png'
-      ? 0.043 // lossless — flat
+      ? 0.05 // lossless — flat (sharper frames since lanczos + sharpest-pick)
       : c.static.format === 'webp'
-        ? 0.013 + 0.002 * q
-        : 0.05 + 0.006 * q; // jpeg — crisp-frame floor dominates
+        ? 0.018 + 0.002 * q
+        : 0.052 + 0.006 * q; // jpeg — crisp-frame floor dominates
   return Math.max(0.05, tiles * perTile);
 }
 

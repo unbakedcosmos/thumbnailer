@@ -38,13 +38,17 @@ fn filter_chain(w: u32, h: u32, fps: Option<f64>, hdr: bool, sharpen: bool) -> S
                 .into(),
         );
     }
+    // Lanczos (windowed sinc) downscales sharper than the default bicubic for
+    // thumbnails; accurate_rnd + full_chroma_int keep chroma clean on the 4:2:0
+    // video sources we're shrinking (ASWF encoding guidelines).
     parts.push(format!(
-        "scale={w}:{h}:force_original_aspect_ratio=decrease:flags=bicubic"
+        "scale={w}:{h}:force_original_aspect_ratio=decrease:flags=lanczos+accurate_rnd+full_chroma_int"
     ));
     parts.push(format!("pad={w}:{h}:-1:-1:color=0x1f2126"));
     if sharpen {
-        // Post-process sharpen on extracted frames (CHANGELOG §1.3)
-        parts.push("unsharp=5:5:0.8:3:3:0.4".into());
+        // Post-process sharpen (CHANGELOG §1.3). Lighter than before since
+        // lanczos already adds edge contrast — avoids over-sharpen/ringing.
+        parts.push("unsharp=5:5:0.5:3:3:0.3".into());
     }
     parts.push("setsar=1".into());
     parts.push("format=rgb24".into());
@@ -158,6 +162,119 @@ pub async fn extract_frame(
     ];
     let frames = run_rawvideo(args, w, h, 1).await?;
     Ok(frames.into_iter().next().unwrap())
+}
+
+/// Candidate frames sampled around a still's timestamp; the sharpest non-black
+/// one is kept. More candidates dodge motion-blur / cut / black grabs better, at
+/// more decode time (a "spend time for quality" trade — same one ffmpeg spawn).
+/// The count comes from the effort setting (1 = just grab the frame at `t`).
+const SHARP_FPS: f64 = 6.0; // sampling rate across the candidate window
+
+/// Variance of the Laplacian over luma — the standard focus/sharpness metric
+/// (high = crisp detail). Returns mean luma too, so near-black frames (fades,
+/// cuts) can be de-prioritised.
+fn luma_sharpness(img: &RgbImage) -> (f64, f64) {
+    let w = img.width() as usize;
+    let h = img.height() as usize;
+    if w < 3 || h < 3 {
+        return (0.0, 0.0);
+    }
+    let mut luma = vec![0f32; w * h];
+    let mut sum = 0f64;
+    for (i, p) in img.pixels().enumerate() {
+        let y = 0.299 * p.0[0] as f32 + 0.587 * p.0[1] as f32 + 0.114 * p.0[2] as f32;
+        luma[i] = y;
+        sum += y as f64;
+    }
+    let mean_luma = sum / (w * h) as f64;
+    // 4-neighbour Laplacian on the interior; variance of the response.
+    let (mut s, mut s2, mut n) = (0f64, 0f64, 0u64);
+    for y in 1..h - 1 {
+        for x in 1..w - 1 {
+            let c = luma[y * w + x];
+            let lap = (4.0 * c
+                - luma[(y - 1) * w + x]
+                - luma[(y + 1) * w + x]
+                - luma[y * w + x - 1]
+                - luma[y * w + x + 1]) as f64;
+            s += lap;
+            s2 += lap * lap;
+            n += 1;
+        }
+    }
+    let var = if n > 0 {
+        (s2 - s * s / n as f64) / n as f64
+    } else {
+        0.0
+    };
+    (var, mean_luma)
+}
+
+/// Pick the sharpest frame, skipping near-black ones unless every candidate is
+/// dark (then just take the sharpest of the dark ones).
+fn pick_sharpest(frames: Vec<RgbImage>) -> RgbImage {
+    const BLACK_FLOOR: f64 = 6.0;
+    let scored: Vec<(RgbImage, f64, f64)> = frames
+        .into_iter()
+        .map(|f| {
+            let (var, mean) = luma_sharpness(&f);
+            (f, var, mean)
+        })
+        .collect();
+    let any_bright = scored.iter().any(|(_, _, m)| *m >= BLACK_FLOOR);
+    let score = |var: f64, mean: f64| {
+        if !any_bright || mean >= BLACK_FLOOR {
+            var
+        } else {
+            -1.0
+        }
+    };
+    scored
+        .into_iter()
+        .max_by(|a, b| {
+            score(a.1, a.2)
+                .partial_cmp(&score(b.1, b.2))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(f, _, _)| f)
+        .expect("at least one candidate frame")
+}
+
+/// Like `extract_frame`, but samples a short window around `t` and returns the
+/// sharpest, non-black frame — avoids blurry / transition / black tiles on the
+/// static sheet. Falls back gracefully if the window yields a single frame.
+pub async fn extract_frame_sharp(
+    path: &Path,
+    t: f64,
+    w: u32,
+    h: u32,
+    hdr: bool,
+    sharpen: bool,
+    candidates: usize,
+) -> Result<RgbImage, Failure> {
+    let candidates = candidates.max(1);
+    // Single candidate: just grab the exact frame at `t` (the fast path).
+    if candidates == 1 {
+        return extract_frame(path, t, w, h, hdr, sharpen).await;
+    }
+    let window = candidates as f64 / SHARP_FPS;
+    let start = (t - window / 2.0).max(0.0);
+    let dur = window + 0.25;
+    let vf = filter_chain(w, h, Some(SHARP_FPS), hdr, sharpen);
+    let args: Vec<std::ffi::OsString> = vec![
+        "-ss".into(),
+        format!("{start:.3}").into(),
+        "-t".into(),
+        format!("{dur:.3}").into(),
+        "-i".into(),
+        os_path(path),
+        "-vf".into(),
+        vf.into(),
+        "-frames:v".into(),
+        candidates.to_string().into(),
+    ];
+    let frames = run_rawvideo(args, w, h, candidates).await?;
+    Ok(pick_sharpest(frames))
 }
 
 /// A short clip starting at `t`: `n_frames` frames at `fps`, letterboxed into

@@ -76,6 +76,9 @@ pub struct Settings {
     pub overwrite: bool,
     /// Seeds the animated target for newly-added files (CHANGELOG §3)
     pub default_target_mb: f64,
+    /// Encode effort (speed ↔ quality/size). Global; default Balanced.
+    #[serde(default)]
+    pub effort: Effort,
 }
 
 impl Default for Settings {
@@ -90,6 +93,7 @@ impl Default for Settings {
             preset: "Balanced".into(),
             overwrite: false,
             default_target_mb: 8.0,
+            effort: Effort::default(),
         }
     }
 }
@@ -585,9 +589,11 @@ impl Engine {
             }
         });
 
+        let effort = self.settings.lock().unwrap().effort;
         let ctl = GenControl {
             cancel: token.clone(),
             overwrite,
+            effort,
             progress,
         };
         let template = self.templates.get(&config.static_cfg.template_id);

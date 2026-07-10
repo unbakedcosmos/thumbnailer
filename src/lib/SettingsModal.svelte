@@ -17,6 +17,20 @@
     app.settings.overwrite = !app.settings.overwrite;
     saveSettings();
   }
+  const EFFORTS = [
+    { key: 'fast', label: 'Fast' },
+    { key: 'balanced', label: 'Balanced' },
+    { key: 'quality', label: 'Quality' }
+  ];
+  const EFFORT_HELP = {
+    fast: 'quickest encodes — lower encoder effort',
+    balanced: 'sharper frames + better compression',
+    quality: 'best quality/size — much slower encodes'
+  };
+  function setEffort(e) {
+    app.settings.effort = e;
+    saveSettings();
+  }
   function close() {
     app.settingsOpen = false;
   }
@@ -65,6 +79,22 @@
               class="seg"
               class:active={app.settings.preset === p}
               onclick={() => setPreset(p)}>{p}</button
+            >
+          {/each}
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <div class="label">Encode effort</div>
+          <div class="help">{EFFORT_HELP[app.settings.effort ?? 'balanced']}</div>
+        </div>
+        <div class="seg-group">
+          {#each EFFORTS as e (e.key)}
+            <button
+              class="seg"
+              class:active={(app.settings.effort ?? 'balanced') === e.key}
+              onclick={() => setEffort(e.key)}>{e.label}</button
             >
           {/each}
         </div>

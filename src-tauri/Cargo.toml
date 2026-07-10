@@ -21,6 +21,7 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
+jpeg-encoder = { version = "0.7", features = ["simd"] }
 webp = "0.3"
 ab_glyph = "0.2"
 webp-animation = "0.9"

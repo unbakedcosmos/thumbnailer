@@ -3,11 +3,12 @@
 //! emitted. Static & montage images are format/quality-driven, not size-gated
 //! (CHANGELOG §1) — their knobs are file type, compression and the sheet frame.
 
-use crate::extract::{extract_clip, extract_frame};
+use crate::extract::{extract_clip, extract_frame_sharp};
 use crate::probe::{fmt_duration, probe};
 use crate::render::*;
 use crate::types::*;
 use image::RgbImage;
+use jpeg_encoder::SamplingFactor;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -24,6 +25,7 @@ const MONTAGE_TIMEOUT: Duration = Duration::from_secs(180);
 pub struct GenControl {
     pub cancel: CancellationToken,
     pub overwrite: bool,
+    pub effort: Effort,
     pub progress: Box<dyn Fn(f32) + Send + Sync>,
 }
 
@@ -218,18 +220,48 @@ fn encode_png(img: &RgbImage) -> Result<Vec<u8>, Failure> {
     Ok(out.into_inner())
 }
 
-fn encode_jpeg(img: &RgbImage, q: u8) -> Result<Vec<u8>, Failure> {
+/// JPEG via the pure-Rust `jpeg-encoder`: optimized Huffman tables + progressive
+/// (smaller than the `image` crate's baseline encoder at equal quality), with an
+/// explicit chroma subsampling choice — 4:4:4 for the text/colour-heavy sheet,
+/// coarser for photographic media tiles.
+fn encode_jpeg(
+    img: &RgbImage,
+    q: u8,
+    sampling: SamplingFactor,
+    progressive: bool,
+) -> Result<Vec<u8>, Failure> {
     let mut out = Vec::new();
-    let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, q);
-    enc.encode_image(img)
-        .map_err(|e| Failure::DecodeError(format!("jpeg encode: {e}")))?;
+    let mut enc = jpeg_encoder::Encoder::new(&mut out, q);
+    enc.set_sampling_factor(sampling);
+    enc.set_progressive(progressive);
+    enc.set_optimized_huffman_tables(true);
+    enc.encode(
+        img.as_raw(),
+        img.width() as u16,
+        img.height() as u16,
+        jpeg_encoder::ColorType::Rgb,
+    )
+    .map_err(|e| Failure::DecodeError(format!("jpeg encode: {e}")))?;
     Ok(out)
 }
 
-fn encode_webp_static(img: &RgbImage, q: f32) -> Vec<u8> {
-    webp::Encoder::from_rgb(img.as_raw(), img.width(), img.height())
-        .encode(q)
-        .to_vec()
+/// WebP via libwebp's advanced config: method 6 (max effort → smaller) and
+/// sharp-YUV (accurate RGB→YUV so colour edges / thin lines don't smear —
+/// size-neutral, matters for the sheet chrome). Falls back to the simple
+/// encoder if config init or advanced encode ever fails.
+fn encode_webp_static(img: &RgbImage, q: f32, method: i32, sharp_yuv: bool) -> Vec<u8> {
+    let enc = webp::Encoder::from_rgb(img.as_raw(), img.width(), img.height());
+    if let Ok(mut cfg) = webp::WebPConfig::new() {
+        cfg.quality = q;
+        cfg.method = method;
+        cfg.use_sharp_yuv = sharp_yuv as i32;
+        cfg.lossless = 0;
+        cfg.alpha_compression = 1;
+        if let Ok(mem) = enc.encode_advanced(&cfg) {
+            return mem.to_vec();
+        }
+    }
+    enc.encode(q).to_vec()
 }
 
 /// Map the 0–100 compression slider onto each lossy codec's own quality scale.
@@ -246,30 +278,61 @@ fn webp_quality(quality: u8) -> f32 {
 /// (`encode_static_sheet`), so the quality slider softens only the video content
 /// inside each cell — never the chrome. PNG is lossless (its slider is hidden),
 /// so tiles pass through untouched. Any codec hiccup falls back to the raw tile.
-fn degrade_tile_media(tile: &RgbImage, format: StaticFormat, quality: u8) -> RgbImage {
+fn degrade_tile_media(
+    tile: &RgbImage,
+    format: StaticFormat,
+    quality: u8,
+    effort: Effort,
+) -> RgbImage {
     match format {
         StaticFormat::Png => tile.clone(),
-        StaticFormat::Jpeg => encode_jpeg(tile, jpeg_quality(quality))
-            .ok()
-            .and_then(|b| image::load_from_memory_with_format(&b, image::ImageFormat::Jpeg).ok())
-            .map(|d| d.to_rgb8())
-            .unwrap_or_else(|| tile.clone()),
-        StaticFormat::Webp => webp::Decoder::new(&encode_webp_static(tile, webp_quality(quality)))
-            .decode()
-            .map(|img| img.to_image().to_rgb8())
-            .unwrap_or_else(|| tile.clone()),
+        // Media tiles: 4:2:0 is fine (photographic), maximises compression.
+        StaticFormat::Jpeg => encode_jpeg(
+            tile,
+            jpeg_quality(quality),
+            SamplingFactor::R_4_2_0,
+            effort.jpeg_progressive(),
+        )
+        .ok()
+        .and_then(|b| image::load_from_memory_with_format(&b, image::ImageFormat::Jpeg).ok())
+        .map(|d| d.to_rgb8())
+        .unwrap_or_else(|| tile.clone()),
+        StaticFormat::Webp => webp::Decoder::new(&encode_webp_static(
+            tile,
+            webp_quality(quality),
+            effort.webp_method(),
+            effort.sharp_yuv(),
+        ))
+        .decode()
+        .map(|img| img.to_image().to_rgb8())
+        .unwrap_or_else(|| tile.clone()),
     }
 }
 
 /// Encode the composed sheet. The frame/chrome is kept crisp at a high fixed
 /// quality; the per-tile media has already been degraded to the user's setting
 /// (see `degrade_tile_media`). PNG stays lossless.
-fn encode_static_sheet(img: &RgbImage, format: StaticFormat) -> Result<Vec<u8>, Failure> {
+fn encode_static_sheet(
+    img: &RgbImage,
+    format: StaticFormat,
+    effort: Effort,
+) -> Result<Vec<u8>, Failure> {
     const SHEET_Q: u8 = 95;
     match format {
         StaticFormat::Png => encode_png(img),
-        StaticFormat::Jpeg => encode_jpeg(img, SHEET_Q),
-        StaticFormat::Webp => Ok(encode_webp_static(img, SHEET_Q as f32)),
+        // Sheet: 4:4:4 keeps the colour chrome (accents, timestamps) crisp.
+        StaticFormat::Jpeg => encode_jpeg(
+            img,
+            SHEET_Q,
+            SamplingFactor::R_4_4_4,
+            effort.jpeg_progressive(),
+        ),
+        StaticFormat::Webp => Ok(encode_webp_static(
+            img,
+            SHEET_Q as f32,
+            effort.webp_method(),
+            effort.sharp_yuv(),
+        )),
     }
 }
 
@@ -302,7 +365,15 @@ enum AnimEncoder {
 }
 
 impl AnimEncoder {
-    fn new(format: AnimatedFormat, w: u32, h: u32, webp_q: f32, fps: f64) -> Result<Self, Failure> {
+    fn new(
+        format: AnimatedFormat,
+        w: u32,
+        h: u32,
+        webp_q: f32,
+        fps: f64,
+        method: usize,
+        sharp_yuv: bool,
+    ) -> Result<Self, Failure> {
         match format {
             AnimatedFormat::Webp => {
                 let enc = webp_animation::Encoder::new_with_options(
@@ -310,9 +381,14 @@ impl AnimEncoder {
                     webp_animation::EncoderOptions {
                         encoding_config: Some(webp_animation::EncodingConfig {
                             quality: webp_q,
-                            method: 4,
+                            // Effort-driven: higher method = smaller/slower;
+                            // sharp-YUV keeps colour edges crisp (size-neutral).
+                            method,
                             encoding_type: webp_animation::EncodingType::Lossy(
-                                webp_animation::LossyEncodingConfig::default(),
+                                webp_animation::LossyEncodingConfig {
+                                    use_sharp_yuv: sharp_yuv,
+                                    ..Default::default()
+                                },
                             ),
                         }),
                         ..Default::default()
@@ -386,12 +462,16 @@ fn encode_animated(
     af: &mut AnimFrames,
     format: AnimatedFormat,
     webp_q: f32,
+    method: usize,
+    sharp_yuv: bool,
     ctl: &GenControl,
     prog_base: f32,
     prog_span: f32,
 ) -> Result<Vec<u8>, Failure> {
     let chrome = render_chrome(l, fonts, hm, frame_tpl);
-    let mut enc = AnimEncoder::new(format, l.card_w, l.card_h, webp_q, af.fps)?;
+    let mut enc = AnimEncoder::new(
+        format, l.card_w, l.card_h, webp_q, af.fps, method, sharp_yuv,
+    )?;
 
     let n = af.indices.len();
     for (j, &src_idx) in af.indices.iter().enumerate() {
@@ -528,16 +608,22 @@ async fn compose_still_sheet(
     let mut img = render_chrome(&l, inp.fonts, &hm, &frame_tpl);
     for (i, &t) in times.iter().enumerate() {
         ctl.check()?;
-        let tile = extract_frame(
+        let tile = extract_frame_sharp(
             inp.source,
             t,
             inner_w,
             inner_h,
             meta.hdr,
             cfg.static_cfg.sharpen,
+            ctl.effort.sharp_candidates(),
         )
         .await?;
-        let tile = degrade_tile_media(&tile, cfg.static_cfg.format, cfg.static_cfg.quality);
+        let tile = degrade_tile_media(
+            &tile,
+            cfg.static_cfg.format,
+            cfg.static_cfg.quality,
+            ctl.effort,
+        );
         blit_tile(&mut img, &l, i as u32, &tile);
         draw_timestamp(
             &mut img,
@@ -561,7 +647,7 @@ async fn generate_still(
 ) -> Result<ProducedArtifact, Failure> {
     let cfg = inp.config;
     let img = compose_still_sheet(inp, cfg.grid, ctl, p0, span).await?;
-    let bytes = encode_static_sheet(&img, cfg.static_cfg.format)?;
+    let bytes = encode_static_sheet(&img, cfg.static_cfg.format, ctl.effort)?;
     let dest = resolve_dest(inp.source, cfg, ArtifactKind::Static, ctl.overwrite);
     atomic_write(&dest, &bytes)?;
     if ctl.overwrite {
@@ -636,7 +722,17 @@ async fn generate_montage(
             (((h as f64 * sc) as u32) & !1).max(2),
         );
         let fps_out = ANIM_FPS / *stride as f64;
-        let mut enc = AnimEncoder::new(anim.format, sw, sh, *q, fps_out)?;
+        // Montage is a single cell (fast) — encode directly at the effort method.
+        // sharp-YUV off for the same size-gate reason as the animated grid.
+        let mut enc = AnimEncoder::new(
+            anim.format,
+            sw,
+            sh,
+            *q,
+            fps_out,
+            ctl.effort.webp_anim_method(),
+            false,
+        )?;
         for fr in all_frames.iter().step_by(*stride) {
             ctl.check()?;
             if *sc < 1.0 {
@@ -716,30 +812,84 @@ async fn generate_animated(
     let dest = resolve_dest(inp.source, cfg, ArtifactKind::Animated, ctl.overwrite);
     let ladder = anim_ladder(anim.quality, anim.format);
     let n_steps = ladder.len();
+    let final_method = ctl.effort.webp_anim_method();
+    // sharp-YUV helps the (static) chrome but adds a little size. On this
+    // size-gated grid that extra size can cost a whole degradation rung — a big
+    // quality drop for marginal chroma gain — so keep it off here (measured).
+    // Higher effort still helps via a smaller `method`. Static sheet keeps it on.
+    let sharp_yuv = false;
+    // Probe each rung at a fast method to find the first that fits, then re-encode
+    // only that accepted rung at the full effort method — which is ≤ the probe's
+    // size, so it still fits. This turns "N slow encodes" into "N fast probes + 1
+    // slow encode". GIF ignores method, so probe == final there (no double encode).
+    // Trade-off: probing at a coarser method can occasionally step down one extra
+    // rung near the cap; the guard below keeps the result ≤ target either way.
+    let probe_method = if anim.format == AnimatedFormat::Webp {
+        final_method.min(4)
+    } else {
+        final_method
+    };
     for (i, step) in ladder.iter().enumerate() {
         ctl.check()?;
         let l = animated_layout(cfg.grid, aspect, anim.quality, step.scale);
-        let mut af = AnimFrames {
-            store: &mut store,
-            indices: frame_indices(step),
-            fps: step.fps,
-        };
         let base = p0 + span * (0.55 + 0.45 * i as f32 / n_steps as f32);
         let sp = span * 0.45 / n_steps as f32;
-        let bytes = encode_animated(
-            &l,
-            inp.fonts,
-            &hm,
-            &frame_tpl,
-            &times,
-            &mut af,
-            anim.format,
-            step.q,
-            ctl,
-            base,
-            sp,
-        )?;
-        if bytes.len() as u64 <= target {
+        let probe = {
+            let mut af = AnimFrames {
+                store: &mut store,
+                indices: frame_indices(step),
+                fps: step.fps,
+            };
+            encode_animated(
+                &l,
+                inp.fonts,
+                &hm,
+                &frame_tpl,
+                &times,
+                &mut af,
+                anim.format,
+                step.q,
+                probe_method,
+                sharp_yuv,
+                ctl,
+                base,
+                sp,
+            )?
+        };
+        if probe.len() as u64 <= target {
+            let bytes = if final_method == probe_method {
+                probe
+            } else {
+                let hi = {
+                    let mut af = AnimFrames {
+                        store: &mut store,
+                        indices: frame_indices(step),
+                        fps: step.fps,
+                    };
+                    encode_animated(
+                        &l,
+                        inp.fonts,
+                        &hm,
+                        &frame_tpl,
+                        &times,
+                        &mut af,
+                        anim.format,
+                        step.q,
+                        final_method,
+                        sharp_yuv,
+                        ctl,
+                        base,
+                        sp,
+                    )?
+                };
+                // Guard: on the rare content where higher method isn't smaller,
+                // keep the probe (which already fit) so we never exceed target.
+                if hi.len() as u64 <= target {
+                    hi
+                } else {
+                    probe
+                }
+            };
             atomic_write(&dest, &bytes)?;
             if ctl.overwrite {
                 remove_stale_siblings(inp.source, cfg, ArtifactKind::Animated, &dest);
