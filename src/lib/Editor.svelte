@@ -376,6 +376,7 @@
                   <i style:width="{job.config.static.quality}%"></i>
                   <b style:left="{job.config.static.quality}%"></b>
                 </div>
+                <span class="qval">{job.config.static.quality}<span class="qmax">/100</span></span>
                 <span class="est"
                   >≈ {staticEst.toFixed(1)} MB · lossy {job.config.static.format.toUpperCase()}</span
                 >
@@ -434,6 +435,7 @@
                 <i style:width="{job.config.animated.quality}%"></i>
                 <b style:left="{job.config.animated.quality}%"></b>
               </div>
+              <span class="qval">{job.config.animated.quality}<span class="qmax">/100</span></span>
               {#if panelGated}
                 <span class="est capped"
                   >≤ {job.config.animated.targetMb} MB · size-capped — quality tunes crispness</span
@@ -710,6 +712,20 @@
     background: var(--text);
     border-radius: var(--r-full);
     transform: translate(-50%, -50%);
+  }
+  .qval {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+    flex: 0 0 auto;
+    min-width: 44px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  .qmax {
+    color: var(--text-dim);
+    font-weight: 400;
+    font-size: 11px;
   }
   .est {
     color: var(--accent);
