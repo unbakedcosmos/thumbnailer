@@ -83,5 +83,8 @@ jobs:
           tag: ${{ github.ref_name }}
           token: ${{ github.token }}
           release-dir: release-assets
+          # Replace an existing release for this tag instead of 409ing, so a
+          # re-pushed tag (e.g. rebuilding on a new runner) republishes cleanly.
+          override: true
           # Hyphenated tags (v0.2.1-beta, v1.0.0-rc1) publish as prereleases
           prerelease: ${{ contains(github.ref_name, '-') }}
