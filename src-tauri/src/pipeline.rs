@@ -14,10 +14,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-const ANIM_FPS: f64 = 12.0;
-const ANIM_FRAMES: usize = 30; // 2.5 s — the proven ceiling (PRD FR13)
+const CLIP_SECONDS: f64 = 2.5; // animated clip length (PRD FR13 ceiling)
 const MONTAGE_SEGMENTS: usize = 6;
-const MONTAGE_SEG_FRAMES: usize = 14; // ~1.2 s per segment @ 12 fps
+const MONTAGE_SEG_SECONDS: f64 = 14.0 / 12.0; // ~1.2 s per montage segment
 const STATIC_TIMEOUT: Duration = Duration::from_secs(180);
 const ANIM_TIMEOUT: Duration = Duration::from_secs(420);
 const MONTAGE_TIMEOUT: Duration = Duration::from_secs(180);
@@ -25,7 +24,7 @@ const MONTAGE_TIMEOUT: Duration = Duration::from_secs(180);
 pub struct GenControl {
     pub cancel: CancellationToken,
     pub overwrite: bool,
-    pub effort: Effort,
+    pub params: EncodeParams,
     pub progress: Box<dyn Fn(f32) + Send + Sync>,
 }
 
@@ -157,10 +156,13 @@ fn header_meta<'a>(title: &'a str, meta: &VideoMeta) -> HeaderMeta<'a> {
     }
 }
 
-/// Evenly-sampled timestamps across the video (PRD FR8).
-fn sample_times(duration: f64, n: u32) -> Vec<f64> {
+/// Evenly-sampled timestamps across the video (PRD FR8), optionally skipping a
+/// head/tail fraction (intros / credits) — the advanced trim controls.
+fn sample_times(duration: f64, n: u32, head: f32, tail: f32) -> Vec<f64> {
+    let start = duration * head as f64;
+    let span = (duration * (1.0 - head - tail) as f64).max(duration * 0.05);
     (0..n)
-        .map(|i| duration * (i as f64 + 0.5) / n as f64)
+        .map(|i| start + span * (i as f64 + 0.5) / n as f64)
         .collect()
 }
 
@@ -278,11 +280,19 @@ fn webp_quality(quality: u8) -> f32 {
 /// (`encode_static_sheet`), so the quality slider softens only the video content
 /// inside each cell — never the chrome. PNG is lossless (its slider is hidden),
 /// so tiles pass through untouched. Any codec hiccup falls back to the raw tile.
+fn sampling_factor(s: Subsampling) -> SamplingFactor {
+    match s {
+        Subsampling::S444 => SamplingFactor::R_4_4_4,
+        Subsampling::S422 => SamplingFactor::R_4_2_2,
+        Subsampling::S420 => SamplingFactor::R_4_2_0,
+    }
+}
+
 fn degrade_tile_media(
     tile: &RgbImage,
     format: StaticFormat,
     quality: u8,
-    effort: Effort,
+    params: &EncodeParams,
 ) -> RgbImage {
     match format {
         StaticFormat::Png => tile.clone(),
@@ -291,7 +301,7 @@ fn degrade_tile_media(
             tile,
             jpeg_quality(quality),
             SamplingFactor::R_4_2_0,
-            effort.jpeg_progressive(),
+            params.jpeg_progressive,
         )
         .ok()
         .and_then(|b| image::load_from_memory_with_format(&b, image::ImageFormat::Jpeg).ok())
@@ -300,8 +310,8 @@ fn degrade_tile_media(
         StaticFormat::Webp => webp::Decoder::new(&encode_webp_static(
             tile,
             webp_quality(quality),
-            effort.webp_method(),
-            effort.sharp_yuv(),
+            params.webp_method,
+            params.sharp_yuv,
         ))
         .decode()
         .map(|img| img.to_image().to_rgb8())
@@ -315,23 +325,22 @@ fn degrade_tile_media(
 fn encode_static_sheet(
     img: &RgbImage,
     format: StaticFormat,
-    effort: Effort,
+    params: &EncodeParams,
 ) -> Result<Vec<u8>, Failure> {
-    const SHEET_Q: u8 = 95;
     match format {
         StaticFormat::Png => encode_png(img),
-        // Sheet: 4:4:4 keeps the colour chrome (accents, timestamps) crisp.
+        // Sheet chrome kept crisp at the (default 4:4:4, q95) sheet settings.
         StaticFormat::Jpeg => encode_jpeg(
             img,
-            SHEET_Q,
-            SamplingFactor::R_4_4_4,
-            effort.jpeg_progressive(),
+            params.sheet_quality,
+            sampling_factor(params.sheet_subsampling),
+            params.jpeg_progressive,
         ),
         StaticFormat::Webp => Ok(encode_webp_static(
             img,
-            SHEET_Q as f32,
-            effort.webp_method(),
-            effort.sharp_yuv(),
+            params.sheet_quality as f32,
+            params.webp_method,
+            params.sharp_yuv,
         )),
     }
 }
@@ -508,51 +517,62 @@ struct FitStep {
     scale: f64,
 }
 
-fn anim_ladder(quality: u8, format: AnimatedFormat) -> Vec<FitStep> {
+/// Auto-fit ladder relative to the (user-chosen) base fps and clip length: the
+/// degraded rungs drop fps to ~2/3 and shrink the loop, then the resolution.
+fn anim_ladder(
+    quality: u8,
+    format: AnimatedFormat,
+    base_fps: f64,
+    clip_frames: usize,
+) -> Vec<FitStep> {
     let base_q = (55.0 + 0.4 * quality as f32).min(92.0);
     let q2 = (base_q - 14.0).max(38.0);
     let q3 = (base_q - 28.0).max(38.0);
+    let lo_fps = (base_fps * 2.0 / 3.0).max(6.0);
+    let full_n = clip_frames;
+    let n_lo = ((clip_frames as f64 * lo_fps / base_fps).round() as usize).max(6);
+    let n_lo2 = ((clip_frames as f64 * 0.53).round() as usize).max(6);
     let mut steps = vec![
         FitStep {
             q: base_q,
-            fps: ANIM_FPS,
-            n_frames: ANIM_FRAMES,
+            fps: base_fps,
+            n_frames: full_n,
             scale: 1.0,
         },
         FitStep {
             q: q2,
-            fps: ANIM_FPS,
-            n_frames: ANIM_FRAMES,
+            fps: base_fps,
+            n_frames: full_n,
             scale: 1.0,
         },
         FitStep {
             q: q3,
-            fps: ANIM_FPS,
-            n_frames: ANIM_FRAMES,
+            fps: base_fps,
+            n_frames: full_n,
             scale: 1.0,
         },
         FitStep {
             q: q3,
-            fps: 8.0,
-            n_frames: 20,
+            fps: lo_fps,
+            n_frames: n_lo,
             scale: 1.0,
         },
         FitStep {
             q: q3,
-            fps: 8.0,
-            n_frames: 16,
+            fps: lo_fps,
+            n_frames: n_lo2,
             scale: 1.0,
         },
         FitStep {
             q: q3,
-            fps: 8.0,
-            n_frames: 16,
+            fps: lo_fps,
+            n_frames: n_lo2,
             scale: 0.8,
         },
         FitStep {
             q: q3,
-            fps: 8.0,
-            n_frames: 16,
+            fps: lo_fps,
+            n_frames: n_lo2,
             scale: 0.65,
         },
     ];
@@ -565,10 +585,10 @@ fn anim_ladder(quality: u8, format: AnimatedFormat) -> Vec<FitStep> {
     steps
 }
 
-/// Map a rung's fps/frame budget onto the indices of the extracted 12fps clip.
-fn frame_indices(step: &FitStep) -> Vec<usize> {
+/// Map a rung's fps/frame budget onto the indices of the extracted base-fps clip.
+fn frame_indices(step: &FitStep, base_fps: f64, clip_frames: usize) -> Vec<usize> {
     (0..step.n_frames)
-        .map(|j| ((j as f64 * ANIM_FPS / step.fps).round() as usize).min(ANIM_FRAMES - 1))
+        .map(|j| ((j as f64 * base_fps / step.fps).round() as usize).min(clip_frames - 1))
         .collect()
 }
 
@@ -598,11 +618,29 @@ async fn compose_still_sheet(
     let meta = inp.meta;
     let aspect = tile_aspect(cfg.orientation, meta);
     let frame_tpl = effective_frame(cfg.static_cfg.frame_on, inp.template);
-    let l = static_layout(grid, aspect, 1.0, frame_tpl.header_band);
+    // Static isn't size-gated, so the render scale (device px per CSS unit,
+    // default 2×) is honoured directly.
+    let l = layout(
+        grid,
+        aspect,
+        cfg.static_cfg.render_scale.clamp(1.0, 4.0),
+        frame_tpl.header_band,
+    );
     let n = grid.tiles();
-    let times = sample_times(meta.duration_s, n);
+    let times = sample_times(
+        meta.duration_s,
+        n,
+        ctl.params.head_trim,
+        ctl.params.tail_trim,
+    );
     let hm = header_meta(inp.title, meta);
 
+    // Sharpen amount only applies when the per-file sharpen toggle is on.
+    let sharpen = if cfg.static_cfg.sharpen {
+        ctl.params.sharpen_amount
+    } else {
+        0.0
+    };
     let inner_w = l.tile_w - 2 * l.hairline;
     let inner_h = l.tile_h - 2 * l.hairline;
     let mut img = render_chrome(&l, inp.fonts, &hm, &frame_tpl);
@@ -614,15 +652,16 @@ async fn compose_still_sheet(
             inner_w,
             inner_h,
             meta.hdr,
-            cfg.static_cfg.sharpen,
-            ctl.effort.sharp_candidates(),
+            ctl.params.scaler,
+            sharpen,
+            ctl.params.sharp_candidates,
         )
         .await?;
         let tile = degrade_tile_media(
             &tile,
             cfg.static_cfg.format,
             cfg.static_cfg.quality,
-            ctl.effort,
+            &ctl.params,
         );
         blit_tile(&mut img, &l, i as u32, &tile);
         draw_timestamp(
@@ -647,7 +686,7 @@ async fn generate_still(
 ) -> Result<ProducedArtifact, Failure> {
     let cfg = inp.config;
     let img = compose_still_sheet(inp, cfg.grid, ctl, p0, span).await?;
-    let bytes = encode_static_sheet(&img, cfg.static_cfg.format, ctl.effort)?;
+    let bytes = encode_static_sheet(&img, cfg.static_cfg.format, &ctl.params)?;
     let dest = resolve_dest(inp.source, cfg, ArtifactKind::Static, ctl.overwrite);
     atomic_write(&dest, &bytes)?;
     if ctl.overwrite {
@@ -675,8 +714,10 @@ async fn generate_montage(
     let meta = inp.meta;
     let anim = &cfg.animated;
     let target = (anim.target_mb * 1_000_000.0) as u64;
+    let base_fps = anim.fps.clamp(6.0, 30.0);
+    let seg_frames = (MONTAGE_SEG_SECONDS * base_fps).round().max(4.0) as usize;
     let aspect = tile_aspect(cfg.orientation, meta);
-    let long = 420.0 + 2.4 * anim.quality as f64;
+    let long = (420.0 + 2.4 * anim.quality as f64) * anim.scale.clamp(0.5, 2.0);
     let (w, h) = if aspect >= 1.0 {
         (long as u32, (long / aspect) as u32)
     } else {
@@ -684,17 +725,31 @@ async fn generate_montage(
     };
     let (w, h) = ((w & !1).max(2), (h & !1).max(2));
 
-    let seg_len = MONTAGE_SEG_FRAMES as f64 / ANIM_FPS;
-    let times: Vec<f64> = sample_times(meta.duration_s, MONTAGE_SEGMENTS as u32)
-        .into_iter()
-        .map(|t| t.min((meta.duration_s - seg_len - 0.1).max(0.0)))
-        .collect();
+    let seg_len = seg_frames as f64 / base_fps;
+    let times: Vec<f64> = sample_times(
+        meta.duration_s,
+        MONTAGE_SEGMENTS as u32,
+        ctl.params.head_trim,
+        ctl.params.tail_trim,
+    )
+    .into_iter()
+    .map(|t| t.min((meta.duration_s - seg_len - 0.1).max(0.0)))
+    .collect();
 
     let mut all_frames: Vec<RgbImage> = Vec::new();
     for (i, &t) in times.iter().enumerate() {
         ctl.check()?;
-        let frames =
-            extract_clip(inp.source, t, ANIM_FPS, MONTAGE_SEG_FRAMES, w, h, meta.hdr).await?;
+        let frames = extract_clip(
+            inp.source,
+            t,
+            base_fps,
+            seg_frames,
+            w,
+            h,
+            meta.hdr,
+            ctl.params.scaler,
+        )
+        .await?;
         all_frames.extend(frames);
         ctl.report(p0 + span * 0.6 * (i + 1) as f32 / times.len() as f32);
     }
@@ -721,7 +776,7 @@ async fn generate_montage(
             (((w as f64 * sc) as u32) & !1).max(2),
             (((h as f64 * sc) as u32) & !1).max(2),
         );
-        let fps_out = ANIM_FPS / *stride as f64;
+        let fps_out = base_fps / *stride as f64;
         // Montage is a single cell (fast) — encode directly at the effort method.
         // sharp-YUV off for the same size-gate reason as the animated grid.
         let mut enc = AnimEncoder::new(
@@ -730,7 +785,7 @@ async fn generate_montage(
             sh,
             *q,
             fps_out,
-            ctl.effort.webp_anim_method(),
+            ctl.params.webp_anim_method,
             false,
         )?;
         for fr in all_frames.iter().step_by(*stride) {
@@ -778,29 +833,39 @@ async fn generate_animated(
     // The animated grid always carries the full frame chrome (it's the
     // shareable preview); the frame toggle governs the still image only.
     let frame_tpl = inp.template.clone();
-    let l0 = animated_layout(cfg.grid, aspect, anim.quality, 1.0);
+    let base_fps = anim.fps.clamp(6.0, 30.0);
+    let clip_frames = (CLIP_SECONDS * base_fps).round().max(4.0) as usize;
+    // The user's scale is the ceiling; the ladder degrades from here to fit.
+    let anim_scale = anim.scale.clamp(0.5, 2.0);
+    let l0 = animated_layout(cfg.grid, aspect, anim.quality, anim_scale);
     let n = cfg.grid.tiles();
-    let clip_len = ANIM_FRAMES as f64 / ANIM_FPS;
-    let times: Vec<f64> = sample_times(meta.duration_s, n)
-        .into_iter()
-        .map(|t| t.min((meta.duration_s - clip_len - 0.1).max(0.0)))
-        .collect();
+    let clip_len = clip_frames as f64 / base_fps;
+    let times: Vec<f64> = sample_times(
+        meta.duration_s,
+        n,
+        ctl.params.head_trim,
+        ctl.params.tail_trim,
+    )
+    .into_iter()
+    .map(|t| t.min((meta.duration_s - clip_len - 0.1).max(0.0)))
+    .collect();
     let hm = header_meta(inp.title, meta);
 
     let inner_w = l0.tile_w - 2 * l0.hairline;
     let inner_h = l0.tile_h - 2 * l0.hairline;
     let mut store =
-        ClipStore::new(inner_w, inner_h, ANIM_FRAMES).map_err(|e| io_failure(&e, "temp spool"))?;
+        ClipStore::new(inner_w, inner_h, clip_frames).map_err(|e| io_failure(&e, "temp spool"))?;
     for (i, &t) in times.iter().enumerate() {
         ctl.check()?;
         let frames = extract_clip(
             inp.source,
             t,
-            ANIM_FPS,
-            ANIM_FRAMES,
+            base_fps,
+            clip_frames,
             inner_w,
             inner_h,
             meta.hdr,
+            ctl.params.scaler,
         )
         .await?;
         store
@@ -810,9 +875,9 @@ async fn generate_animated(
     }
 
     let dest = resolve_dest(inp.source, cfg, ArtifactKind::Animated, ctl.overwrite);
-    let ladder = anim_ladder(anim.quality, anim.format);
+    let ladder = anim_ladder(anim.quality, anim.format, base_fps, clip_frames);
     let n_steps = ladder.len();
-    let final_method = ctl.effort.webp_anim_method();
+    let final_method = ctl.params.webp_anim_method;
     // sharp-YUV helps the (static) chrome but adds a little size. On this
     // size-gated grid that extra size can cost a whole degradation rung — a big
     // quality drop for marginal chroma gain — so keep it off here (measured).
@@ -831,13 +896,13 @@ async fn generate_animated(
     };
     for (i, step) in ladder.iter().enumerate() {
         ctl.check()?;
-        let l = animated_layout(cfg.grid, aspect, anim.quality, step.scale);
+        let l = animated_layout(cfg.grid, aspect, anim.quality, anim_scale * step.scale);
         let base = p0 + span * (0.55 + 0.45 * i as f32 / n_steps as f32);
         let sp = span * 0.45 / n_steps as f32;
         let probe = {
             let mut af = AnimFrames {
                 store: &mut store,
-                indices: frame_indices(step),
+                indices: frame_indices(step, base_fps, clip_frames),
                 fps: step.fps,
             };
             encode_animated(
@@ -863,7 +928,7 @@ async fn generate_animated(
                 let hi = {
                     let mut af = AnimFrames {
                         store: &mut store,
-                        indices: frame_indices(step),
+                        indices: frame_indices(step, base_fps, clip_frames),
                         fps: step.fps,
                     };
                     encode_animated(

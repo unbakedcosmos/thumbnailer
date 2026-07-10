@@ -3,7 +3,7 @@
 //! the static and animated artifacts share one template executor (PRD §5).
 
 use crate::ffmpeg::{base_command, ffmpeg_path, os_path};
-use crate::types::Failure;
+use crate::types::{Failure, Scaler};
 use image::RgbImage;
 use std::path::Path;
 use std::process::Stdio;
@@ -24,7 +24,14 @@ fn has_zscale() -> bool {
 
 /// Scale + letterbox chain into an exact w×h tile. Letterbox bars use
 /// surface-2 (#1f2126) per the design's tile-placeholder token.
-fn filter_chain(w: u32, h: u32, fps: Option<f64>, hdr: bool, sharpen: bool) -> String {
+fn filter_chain(
+    w: u32,
+    h: u32,
+    fps: Option<f64>,
+    hdr: bool,
+    scaler: Scaler,
+    sharpen_amount: f32,
+) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(f) = fps {
         // fps filter also normalizes variable-frame-rate sources (NFR3)
@@ -38,17 +45,22 @@ fn filter_chain(w: u32, h: u32, fps: Option<f64>, hdr: bool, sharpen: bool) -> S
                 .into(),
         );
     }
-    // Lanczos (windowed sinc) downscales sharper than the default bicubic for
-    // thumbnails; accurate_rnd + full_chroma_int keep chroma clean on the 4:2:0
-    // video sources we're shrinking (ASWF encoding guidelines).
+    // Scaler chosen by the user (default lanczos — a windowed sinc that
+    // downscales sharper than bicubic; accurate_rnd + full_chroma_int keep chroma
+    // clean on the 4:2:0 video sources we're shrinking, per ASWF guidelines).
     parts.push(format!(
-        "scale={w}:{h}:force_original_aspect_ratio=decrease:flags=lanczos+accurate_rnd+full_chroma_int"
+        "scale={w}:{h}:force_original_aspect_ratio=decrease:flags={}",
+        scaler.flags()
     ));
     parts.push(format!("pad={w}:{h}:-1:-1:color=0x1f2126"));
-    if sharpen {
-        // Post-process sharpen (CHANGELOG §1.3). Lighter than before since
-        // lanczos already adds edge contrast — avoids over-sharpen/ringing.
-        parts.push("unsharp=5:5:0.5:3:3:0.3".into());
+    if sharpen_amount > 0.0 {
+        // Post-process sharpen (CHANGELOG §1.3); chroma amount is lighter than
+        // luma. Kept modest since lanczos already adds edge contrast.
+        parts.push(format!(
+            "unsharp=5:5:{:.2}:3:3:{:.2}",
+            sharpen_amount,
+            sharpen_amount * 0.6
+        ));
     }
     parts.push("setsar=1".into());
     parts.push("format=rgb24".into());
@@ -147,9 +159,10 @@ pub async fn extract_frame(
     w: u32,
     h: u32,
     hdr: bool,
-    sharpen: bool,
+    scaler: Scaler,
+    sharpen_amount: f32,
 ) -> Result<RgbImage, Failure> {
-    let vf = filter_chain(w, h, None, hdr, sharpen);
+    let vf = filter_chain(w, h, None, hdr, scaler, sharpen_amount);
     let args: Vec<std::ffi::OsString> = vec![
         "-ss".into(),
         format!("{t:.3}").into(),
@@ -243,24 +256,26 @@ fn pick_sharpest(frames: Vec<RgbImage>) -> RgbImage {
 /// Like `extract_frame`, but samples a short window around `t` and returns the
 /// sharpest, non-black frame — avoids blurry / transition / black tiles on the
 /// static sheet. Falls back gracefully if the window yields a single frame.
+#[allow(clippy::too_many_arguments)]
 pub async fn extract_frame_sharp(
     path: &Path,
     t: f64,
     w: u32,
     h: u32,
     hdr: bool,
-    sharpen: bool,
+    scaler: Scaler,
+    sharpen_amount: f32,
     candidates: usize,
 ) -> Result<RgbImage, Failure> {
     let candidates = candidates.max(1);
     // Single candidate: just grab the exact frame at `t` (the fast path).
     if candidates == 1 {
-        return extract_frame(path, t, w, h, hdr, sharpen).await;
+        return extract_frame(path, t, w, h, hdr, scaler, sharpen_amount).await;
     }
     let window = candidates as f64 / SHARP_FPS;
     let start = (t - window / 2.0).max(0.0);
     let dur = window + 0.25;
-    let vf = filter_chain(w, h, Some(SHARP_FPS), hdr, sharpen);
+    let vf = filter_chain(w, h, Some(SHARP_FPS), hdr, scaler, sharpen_amount);
     let args: Vec<std::ffi::OsString> = vec![
         "-ss".into(),
         format!("{start:.3}").into(),
@@ -280,6 +295,7 @@ pub async fn extract_frame_sharp(
 /// A short clip starting at `t`: `n_frames` frames at `fps`, letterboxed into
 /// w×h. If the source runs out early, the last frame is repeated so every
 /// tile has a uniform frame count.
+#[allow(clippy::too_many_arguments)]
 pub async fn extract_clip(
     path: &Path,
     t: f64,
@@ -288,9 +304,11 @@ pub async fn extract_clip(
     w: u32,
     h: u32,
     hdr: bool,
+    scaler: Scaler,
 ) -> Result<Vec<RgbImage>, Failure> {
     let dur = n_frames as f64 / fps + 0.25;
-    let vf = filter_chain(w, h, Some(fps), hdr, false);
+    // Clips aren't post-sharpened (motion); scaler still applies.
+    let vf = filter_chain(w, h, Some(fps), hdr, scaler, 0.0);
     let args: Vec<std::ffi::OsString> = vec![
         "-ss".into(),
         format!("{t:.3}").into(),

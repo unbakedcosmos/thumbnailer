@@ -79,6 +79,9 @@ pub struct Settings {
     /// Encode effort (speed ↔ quality/size). Global; default Balanced.
     #[serde(default)]
     pub effort: Effort,
+    /// Manual knobs, active only when `effort == Custom`.
+    #[serde(default)]
+    pub advanced: Advanced,
 }
 
 impl Default for Settings {
@@ -94,6 +97,7 @@ impl Default for Settings {
             overwrite: false,
             default_target_mb: 8.0,
             effort: Effort::default(),
+            advanced: Advanced::default(),
         }
     }
 }
@@ -589,11 +593,14 @@ impl Engine {
             }
         });
 
-        let effort = self.settings.lock().unwrap().effort;
+        let params = {
+            let s = self.settings.lock().unwrap();
+            EncodeParams::resolve(s.effort, &s.advanced)
+        };
         let ctl = GenControl {
             cancel: token.clone(),
             overwrite,
-            effort,
+            params,
             progress,
         };
         let template = self.templates.get(&config.static_cfg.template_id);

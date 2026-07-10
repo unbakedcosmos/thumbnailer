@@ -45,7 +45,7 @@ async fn main() {
     let ctl = GenControl {
         cancel: CancellationToken::new(),
         overwrite: true,
-        effort: thumbnailer_lib::types::Effort::default(),
+        params: thumbnailer_lib::types::EncodeParams::default(),
         progress: Box::new(|p| eprint!("\r{:5.1}%", p * 100.0)),
     };
     let started = std::time::Instant::now();

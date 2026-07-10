@@ -54,7 +54,7 @@ fn ctl() -> GenControl {
     GenControl {
         cancel: CancellationToken::new(),
         overwrite: false,
-        effort: Effort::default(),
+        params: EncodeParams::default(),
         progress: Box::new(|_| {}),
     }
 }
@@ -177,7 +177,7 @@ async fn static_formats_and_frame_toggle() {
     let ctl_ow0 = GenControl {
         cancel: CancellationToken::new(),
         overwrite: true,
-        effort: Effort::default(),
+        params: EncodeParams::default(),
         progress: Box::new(|_| {}),
     };
     let (_, _) = run_job(&video, &config, &classic(), &fonts, &ctl_ow0)
@@ -195,7 +195,7 @@ async fn static_formats_and_frame_toggle() {
     let ctl_ow = || GenControl {
         cancel: CancellationToken::new(),
         overwrite: true,
-        effort: Effort::default(),
+        params: EncodeParams::default(),
         progress: Box::new(|_| {}),
     };
     let (_, framed) = run_job(&video, &config, &classic(), &fonts, &ctl_ow())
@@ -310,7 +310,7 @@ async fn rerun_appends_numbered_copy_unless_overwrite() {
     let ctl_ow = GenControl {
         cancel: CancellationToken::new(),
         overwrite: true,
-        effort: Effort::default(),
+        params: EncodeParams::default(),
         progress: Box::new(|_| {}),
     };
     let (_, fourth) = run_job(&video, &config, &classic(), &fonts, &ctl_ow)

@@ -60,7 +60,19 @@ export const app = $state({
     preset: 'Balanced',
     overwrite: false,
     defaultTargetMb: 8,
-    effort: 'balanced'
+    effort: 'balanced',
+    advanced: {
+      sharpCandidates: 3,
+      webpMethod: 4,
+      sharpYuv: true,
+      jpegProgressive: true,
+      sheetSubsampling: 's444',
+      sheetQuality: 95,
+      scaler: 'lanczos',
+      sharpenAmount: 0.5,
+      headTrim: 0,
+      tailTrim: 0
+    }
   },
   templates: [],
   templateGalleryOpen: false,

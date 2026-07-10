@@ -138,6 +138,23 @@
     job.config.animated.targetMb = Math.min(32, Math.max(1, job.config.animated.targetMb + delta));
     syncJobConfig(job);
   }
+  // Per-file advanced controls (shown in Custom mode)
+  const showAdvanced = $derived(app.settings.effort === 'custom');
+  const RENDER_SCALES = [1, 1.5, 2, 3];
+  const FPS_OPTS = [8, 10, 12, 15];
+  function setRenderScale(s) {
+    job.config.static.renderScale = s;
+    syncJobConfig(job);
+  }
+  function setFps(f) {
+    job.config.animated.fps = f;
+    syncJobConfig(job);
+  }
+  function bumpAnimScale(d) {
+    const v = Math.min(2, Math.max(0.5, Math.round((job.config.animated.scale + d) * 100) / 100));
+    job.config.animated.scale = v;
+    syncJobConfig(job);
+  }
   function setOutputMode(m) {
     job.config.outputMode = m;
     syncJobConfig(job);
@@ -387,6 +404,20 @@
               >
             {/if}
           </div>
+          {#if showAdvanced}
+            <div class="field span2f">
+              <span class="label">Render scale</span>
+              <div class="seg-group">
+                {#each RENDER_SCALES as s (s)}
+                  <button
+                    class="seg"
+                    class:active={(job.config.static.renderScale ?? 2) === s}
+                    onclick={() => setRenderScale(s)}>{s}×</button
+                  >
+                {/each}
+              </div>
+            </div>
+          {/if}
         </div>
       </div>
     {/if}
@@ -447,6 +478,35 @@
               {/if}
             </div>
           </div>
+          {#if showAdvanced}
+            <div class="field">
+              <span class="label">Frame rate</span>
+              <div class="seg-group">
+                {#each FPS_OPTS as f (f)}
+                  <button
+                    class="seg"
+                    class:active={(job.config.animated.fps ?? 12) === f}
+                    onclick={() => setFps(f)}>{f}</button
+                  >
+                {/each}
+              </div>
+            </div>
+            <div class="field">
+              <span class="label">Resolution</span>
+              <div class="stepper">
+                <button onclick={() => bumpAnimScale(-0.25)} aria-label="Lower resolution">−</button
+                >
+                <span class="val">×{(job.config.animated.scale ?? 1).toFixed(2)}</span>
+                <button onclick={() => bumpAnimScale(0.25)} aria-label="Higher resolution">+</button
+                >
+              </div>
+            </div>
+            <div class="field span2f">
+              <span class="hint"
+                >fps &amp; resolution are ceilings — the size cap still degrades from here</span
+              >
+            </div>
+          {/if}
         </div>
       </div>
     {/if}

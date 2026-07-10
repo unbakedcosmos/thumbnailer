@@ -59,9 +59,9 @@ pub enum OutputMode {
 }
 
 /// Encoder effort — trades encode time for quality/size. A global setting.
-/// Drives WebP method + sharp-YUV, JPEG progressive, and how many candidate
-/// frames the static sheet scans to pick the sharpest. Fast ≈ the pre-quality-
-/// pass behaviour; Quality is the slow, best path.
+/// Fast/Balanced/Quality are one-click bundles; Custom hands every knob to the
+/// user via `Advanced`. Resolve any effort → concrete params with
+/// `EncodeParams::resolve`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Effort {
@@ -69,37 +69,163 @@ pub enum Effort {
     #[default]
     Balanced,
     Quality,
+    Custom,
 }
 
 impl Effort {
     /// Candidate frames scanned per still tile to pick the sharpest (1 = just
-    /// grab the frame at the timestamp).
-    pub fn sharp_candidates(self) -> usize {
+    /// grab the frame at the timestamp). Preset value; Custom uses `Advanced`.
+    fn preset_candidates(self) -> usize {
         match self {
             Effort::Fast => 1,
-            Effort::Balanced => 3,
             Effort::Quality => 5,
+            _ => 3,
         }
     }
     /// libwebp method (0–6): higher = slower but smaller/better.
-    pub fn webp_method(self) -> i32 {
+    fn preset_method(self) -> u8 {
         match self {
             Effort::Fast => 3,
-            Effort::Balanced => 4,
             Effort::Quality => 6,
+            _ => 4,
         }
     }
-    /// Same, typed for webp-animation's `usize` method field.
-    pub fn webp_anim_method(self) -> usize {
-        self.webp_method() as usize
-    }
-    /// Sharper (slower) RGB→YUV conversion — off on Fast.
-    pub fn sharp_yuv(self) -> bool {
+    fn preset_sharp_yuv(self) -> bool {
         !matches!(self, Effort::Fast)
     }
-    /// Progressive JPEG (smaller, a little slower) — off on Fast.
-    pub fn jpeg_progressive(self) -> bool {
+    fn preset_progressive(self) -> bool {
         !matches!(self, Effort::Fast)
+    }
+}
+
+/// Downscale filter for frame extraction (ffmpeg `scale` flags).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Scaler {
+    #[default]
+    Lanczos,
+    Bicubic,
+    Spline,
+    Area,
+}
+
+impl Scaler {
+    /// ffmpeg `scale=...:flags=` value.
+    pub fn flags(self) -> &'static str {
+        match self {
+            Scaler::Lanczos => "lanczos+accurate_rnd+full_chroma_int",
+            Scaler::Bicubic => "bicubic+accurate_rnd+full_chroma_int",
+            Scaler::Spline => "spline+accurate_rnd+full_chroma_int",
+            Scaler::Area => "area+accurate_rnd",
+        }
+    }
+}
+
+/// JPEG chroma subsampling for the composed sheet (media tiles always use 4:2:0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Subsampling {
+    /// No subsampling — crispest colour edges (best for text/UI chrome).
+    #[default]
+    S444,
+    S422,
+    S420,
+}
+
+/// Full manual control, active only when `Effort::Custom`. Defaults mirror
+/// Balanced + the pipeline's built-in decode defaults, so switching to Custom
+/// changes nothing until a knob is moved.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Advanced {
+    pub sharp_candidates: usize,
+    pub webp_method: u8,
+    pub sharp_yuv: bool,
+    pub jpeg_progressive: bool,
+    pub sheet_subsampling: Subsampling,
+    pub sheet_quality: u8,
+    pub scaler: Scaler,
+    /// Unsharp luma amount (0 = the sharpen toggle does nothing).
+    pub sharpen_amount: f32,
+    /// Fraction of the runtime skipped at the head / tail (0.0–0.4).
+    pub head_trim: f32,
+    pub tail_trim: f32,
+}
+
+impl Default for Advanced {
+    fn default() -> Self {
+        Advanced {
+            sharp_candidates: 3,
+            webp_method: 4,
+            sharp_yuv: true,
+            jpeg_progressive: true,
+            sheet_subsampling: Subsampling::S444,
+            sheet_quality: 95,
+            scaler: Scaler::Lanczos,
+            sharpen_amount: 0.5,
+            head_trim: 0.0,
+            tail_trim: 0.0,
+        }
+    }
+}
+
+/// Concrete encode/decode parameters the pipeline reads — resolved once from the
+/// effort preset (or the Advanced overrides when Custom). Keeps the preset-vs-
+/// custom branching in one place.
+#[derive(Debug, Clone, Copy)]
+pub struct EncodeParams {
+    pub sharp_candidates: usize,
+    pub webp_method: i32,
+    pub webp_anim_method: usize,
+    pub sharp_yuv: bool,
+    pub jpeg_progressive: bool,
+    pub sheet_subsampling: Subsampling,
+    pub sheet_quality: u8,
+    pub scaler: Scaler,
+    pub sharpen_amount: f32,
+    pub head_trim: f32,
+    pub tail_trim: f32,
+}
+
+impl EncodeParams {
+    pub fn resolve(effort: Effort, adv: &Advanced) -> Self {
+        if effort == Effort::Custom {
+            EncodeParams {
+                sharp_candidates: adv.sharp_candidates.clamp(1, 15),
+                webp_method: adv.webp_method.min(6) as i32,
+                webp_anim_method: adv.webp_method.min(6) as usize,
+                sharp_yuv: adv.sharp_yuv,
+                jpeg_progressive: adv.jpeg_progressive,
+                sheet_subsampling: adv.sheet_subsampling,
+                sheet_quality: adv.sheet_quality.clamp(60, 100),
+                scaler: adv.scaler,
+                sharpen_amount: adv.sharpen_amount.clamp(0.0, 3.0),
+                head_trim: adv.head_trim.clamp(0.0, 0.4),
+                tail_trim: adv.tail_trim.clamp(0.0, 0.4),
+            }
+        } else {
+            // Presets: effort drives the bundled knobs; decode/sheet knobs use
+            // the built-in defaults (unchanged pre-Custom behaviour).
+            EncodeParams {
+                sharp_candidates: effort.preset_candidates(),
+                webp_method: effort.preset_method() as i32,
+                webp_anim_method: effort.preset_method() as usize,
+                sharp_yuv: effort.preset_sharp_yuv(),
+                jpeg_progressive: effort.preset_progressive(),
+                sheet_subsampling: Subsampling::S444,
+                sheet_quality: 95,
+                scaler: Scaler::Lanczos,
+                sharpen_amount: 0.5,
+                head_trim: 0.0,
+                tail_trim: 0.0,
+            }
+        }
+    }
+}
+
+impl Default for EncodeParams {
+    fn default() -> Self {
+        EncodeParams::resolve(Effort::Balanced, &Advanced::default())
     }
 }
 
@@ -156,6 +282,9 @@ pub struct StaticConfig {
     pub frame_on: bool,
     /// Sheet-frame template id (templates are user data, CHANGELOG §2)
     pub template_id: String,
+    /// Device render scale (px per CSS unit): 2.0 = the default 2× sheet. Higher
+    /// = crisper/larger output. Static isn't size-gated, so this is honoured.
+    pub render_scale: f64,
 }
 
 impl Default for StaticConfig {
@@ -166,6 +295,7 @@ impl Default for StaticConfig {
             sharpen: false,
             frame_on: true,
             template_id: "classic".into(),
+            render_scale: 2.0,
         }
     }
 }
@@ -179,6 +309,12 @@ pub struct AnimatedConfig {
     pub quality: u8,
     /// Hard size ceiling in MB — the size-gate control (PRD FR16)
     pub target_mb: f64,
+    /// Preview frame rate (6–30). A ceiling: the auto-fit ladder still drops fps
+    /// from here to honour the target size.
+    pub fps: f64,
+    /// Tile-resolution multiplier on the quality-derived long side (0.5–2.0). A
+    /// ceiling: the ladder still shrinks from here to honour the target size.
+    pub scale: f64,
 }
 
 impl Default for AnimatedConfig {
@@ -187,6 +323,8 @@ impl Default for AnimatedConfig {
             format: AnimatedFormat::Webp,
             quality: 62,
             target_mb: 8.0,
+            fps: 12.0,
+            scale: 1.0,
         }
     }
 }
